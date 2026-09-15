@@ -1,0 +1,16 @@
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# norns runtime data (not code — leave these out of the repo)
+data/
+audio/
+
+# Local env files, if any get added later
+.env
