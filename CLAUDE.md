@@ -1,0 +1,54 @@
+# norns-projects — CLAUDE.md
+
+Context for Claude when working in this repo. norns scripts are Lua, run on a Raspberry Pi-based synth/sequencer platform (monome norns). No internet access on-device; scripts load via matron (script engine) and SuperCollider (audio engine) — MIDI-only scripts don't touch the audio engine.
+
+## Script structure (standard shape)
+
+```lua
+-- required globals: init(), redraw(), key(n,z), enc(n,d), cleanup()
+engine.name = nil -- omit entirely if MIDI-out only, no synth engine needed
+
+function init()
+  -- set up params, clocks, midi devices, grid/arc connections here
+end
+
+function redraw()
+  screen.clear()
+  -- draw calls
+  screen.update()
+end
+
+function key(n, z) end   -- n = key 1-3, z = 1 press / 0 release
+function enc(n, d) end   -- n = encoder 1-3, d = delta
+function cleanup() end   -- save state, stop clocks on script quit
+```
+
+## Core modules used across these scripts
+
+- **clock** — coroutine-based timing. Use `clock.run(function() ... end)` for loops, not `metro` for anything tempo-synced. `clock.sync(beat_fraction)` to quantize to transport.
+- **midi** — `midi.connect(n)` returns a device; `dev:send(...)` or `dev:note_on(note, vel, ch)`. Always null-check connected devices in `init()`.
+- **grid** — `grid.connect()`; `g.key = function(x,y,z) end`; redraw grid separately from screen via `g:led(x,y,val)` + `g:refresh()`.
+- **arc** — same pattern as grid but `a:segment(ring, from, to, level)` for ring UI. Arc dirty/refresh cycle is separate from screen redraw — don't conflate.
+- **params** — use `params:add_number/option/control(...)` in `init()`, group related params with `params:add_group()`. This is how PARAMS menu + pset save/load work; don't hand-roll state persistence if params can hold it.
+- **screen** — cairo subset. `screen.level(0-15)` before draw calls, `screen.aa(1)` for antialiasing on curves/circles (used for orb/glow visuals).
+- **lib.musicutil** — scale/note utilities. Use `musicutil.generate_scale(root, scale_name, octaves)` instead of hand-building scale tables.
+- **lib.sequins** — pattern sequencing container (`sequins{1,2,3}`), useful for per-track step patterns.
+- **lib.util** — general helpers (`util.clamp`, `util.linlin` for range mapping — used constantly for velocity→brightness type mappings).
+
+Full API index: https://monome.org/docs/norns/api/index.html
+
+## Best practices for this repo
+
+1. **Redraw sparingly.** `screen.update()` at ~30fps via a dedicated `clock.run` loop, not inside every event handler. Avoid calling redraw() from key/enc/midi callbacks directly if it causes rapid re-draws.
+2. **Clock coroutines over metro** for anything musically timed. Reserve `metro` for UI polling (e.g. blink timers) unrelated to tempo.
+3. **Always clean up in `cleanup()`** — stop clocks (`clock.cancel(id)`), release grid/arc devices, otherwise orphaned coroutines persist across script reloads.
+4. **CPU budget** — norns is a Pi; avoid per-frame table allocation in redraw loops. Precompute what you can in init() or on state-change, not every frame.
+5. **MIDI-out-only scripts**: don't set `engine.name`, don't load SuperCollider engine files. This alone meaningfully cuts CPU vs. scripts with an active synth engine.
+6. **Params over globals** for anything user-adjustable — gives you the menu UI and pset save/load for free.
+7. **Separate visual/logic concerns**: keep sequencing logic and redraw/visual code in different functions or files so visual changes (orb color, glow decay) don't risk touching timing logic.
+
+## Don't
+
+- Don't add `mx.samples` or internal sample-engine code to MIDI-out-only scripts.
+- Don't hand-roll scale/chord math when `lib.musicutil` covers it.
+- Don't use `os.clock()` or raw Lua timers for musical timing — use `clock`.
