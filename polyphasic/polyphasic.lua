@@ -8,6 +8,21 @@
 -- (see the TRACK N params), and every grid-triggered note draws its
 -- velocity from one shared lo/hi range under the "polyphasic" params group.
 --
+-- MIDI clock out: enable per-port under PARAMETERS > CLOCK > "midi out" --
+-- that's a norns system feature (streams continuous clock ticks on its
+-- own), not something this script sets up. This script's own play/stop
+-- additionally sends MIDI start/stop to those same ports, so an external
+-- arpeggiator's transport follows along, not just its tempo.
+--
+-- display: "Halide" -- glowing per-track orbs over a faint dot-matrix
+-- field (see lib/display.lua and NOTES.md for the other concepts tried,
+-- including "Vanishing" -- a streetlamp-per-track scene -- which shipped
+-- briefly and was reverted for feeling convoluted next to this one).
+-- track number + mute state show as a small glowing corner badge instead
+-- of a text line; bpm/cpu% is hideable via PARAMETERS > DISPLAY >
+-- "show bpm/cpu"; the bottom line shows the arc's footer when one's
+-- connected, or falls back to play/direction/division when it isn't.
+--
 --    ▼ instructions below ▼
 --
 -- E1: change track
@@ -22,27 +37,35 @@
 -- K1+K2: clear current view
 -- K1+K3: clear all
 --
+-- arc (optional): a paged 4-ring editor for whichever track is currently
+-- selected (E1). press the arc's own pushbutton to cycle pages: PLAY
+-- (division/direction/limit/probability), MIX (mute/poly/velocity range),
+-- RANGE (note lo/hi, scale, root), PERFORMANCE (track select, clear,
+-- randomize, evolve). K1+turn a ring applies that change to all 4 tracks
+-- at once instead of just the selected one (footer shows "[ALL]" while
+-- held). arc sensitivity/brightness/position live in PARAMETERS > ARC.
+-- MIDI device/channel routing isn't on the arc -- set it up once in
+-- PARAMETERS or via a pset.
+--
 GridLib = include("polyphasic/lib/ggrid")
 Sequence = include("polyphasic/lib/sequence")
 Display = include("polyphasic/lib/display")
 lattice = require("lattice")
-if not string.find(package.cpath, "/home/we/dust/code/polyphasic/lib/") then
-  package.cpath = package.cpath .. ";/home/we/dust/code/polyphasic/lib/?.so"
-end
-json = require("cjson") -- NOTE: needs cjson's .so present in polyphasic/lib/
-                         -- (pitter-patter ships it via a git submodule) or
-                         -- pattern save/load below will fail to require it.
 
 sequencers = {}
 last_cpu = 0
+
+-- shared with enc()/key() below (K1 = shift) and with the arc (K1 held
+-- while turning a ring broadcasts it to all 4 tracks -- see all_track_fields)
+local is_shift = false
 
 -- ppqn=96 divides evenly by 2 and 3, so the triplet-family divisions below
 -- are clock-accurate with no jitter. quintuplet/septuplet divisions would
 -- need a higher ppqn (more clock overhead) and aren't included here.
 local divisions = {4, 2, 1, 2/3, 1/2, 1/3, 1/4, 1/6, 1/8, 1/12, 1/16, 1/24, 1/32}
 local divisions_strings = {
-  "4 beats", "2 beats", "1 beat", "2/3 (triplet)", "1/2", "1/3 (triplet)",
-  "1/4", "1/6 (triplet)", "1/8", "1/12 (triplet)", "1/16", "1/24 (triplet)", "1/32"
+  "4 beats", "2 beats", "1 beat", "2/3", "1/2", "1/3",
+  "1/4", "1/6", "1/8", "1/12", "1/16", "1/24", "1/32"
 }
 
 local function add_control(id, name, min, max, default, unit)
@@ -69,6 +92,68 @@ local function make_on_note(track_id)
   end
 end
 
+-- arc: a paged 4-ring editor for the currently selected track's params
+-- (main_sequence -- the same "current track" E1/E2/E3 already use). the
+-- generic paging/rendering/sensitivity machinery lives in lib/garc.lua
+-- (reusable across future scripts); this table is just polyphasic's page
+-- layout, with a per-track ring's `id` as a resolver function so it always
+-- points at whichever track is currently selected.
+GArc = include("polyphasic/lib/garc")
+
+local function track_field(field)
+  return function() return "sequence" .. params:get("main_sequence") .. "_" .. field end
+end
+
+-- hold K1 while turning an arc ring to apply the change to all 4 tracks at
+-- once instead of just the selected one (see is_shift below) -- lets e.g.
+-- scale get set the same on every track in one turn instead of 4
+local function all_track_fields(field)
+  return function()
+    local ids = {}
+    for i = 1, 4 do table.insert(ids, "sequence" .. i .. "_" .. field) end
+    return ids
+  end
+end
+
+local ARC_PAGES = {
+  {
+    name = "PLAY",
+    rings = {
+      {label = "division", id = track_field("division"), all_ids = all_track_fields("division")},
+      {label = "direction", id = track_field("direction"), all_ids = all_track_fields("direction")},
+      {label = "limit", id = track_field("limit"), all_ids = all_track_fields("limit")},
+      {label = "prob", id = track_field("probability"), all_ids = all_track_fields("probability")}
+    }
+  }, {
+    name = "MIX",
+    rings = {
+      {label = "mute", id = track_field("mute"), all_ids = all_track_fields("mute")},
+      {label = "poly", id = track_field("poly"), all_ids = all_track_fields("poly")},
+      {label = "vel lo", id = "vel_lo"},
+      {label = "vel hi", id = "vel_hi"}
+    }
+  }, {
+    name = "RANGE",
+    rings = {
+      {label = "note lo", id = track_field("note_lo"), all_ids = all_track_fields("note_lo")},
+      {label = "note hi", id = track_field("note_hi"), all_ids = all_track_fields("note_hi")},
+      {label = "scale", id = track_field("scale"), all_ids = all_track_fields("scale")},
+      {label = "root", id = track_field("root_note"), all_ids = all_track_fields("root_note")}
+    }
+  }, {
+    name = "PERFORMANCE",
+    rings = {
+      {label = "track", id = "main_sequence"}, -- global: changes which track every other page's rings act on
+      {label = "clear", id = track_field("clear"), all_ids = all_track_fields("clear")},
+      {label = "randomize", id = track_field("randomize"), all_ids = all_track_fields("randomize")},
+      {label = "evolve", id = track_field("evolve"), all_ids = all_track_fields("evolve")}
+    }
+  }
+  -- MIDI device/channel routing intentionally left off the arc -- that's a
+  -- per-setup thing to configure once (or via a pset), not something worth
+  -- live arc access.
+}
+
 function init()
   for i = 1, 4 do
     sequencers[i] = Sequence:new{
@@ -82,16 +167,45 @@ function init()
 
   params_main()
 
+  params:add_group("DISPLAY", 1)
+  params:add{
+    type = "control", id = "show_header", name = "show bpm/cpu",
+    controlspec = controlspec.new(0, 1, "lin", 1, 1, "", 1),
+    formatter = function(param) return param:get() == 1 and "on" or "off" end
+  }
+
   params:add_group("polyphasic", 2)
   add_control("vel_lo", "velocity lo", 1, 127, 40)
   add_control("vel_hi", "velocity hi", 1, 127, 110)
   params:set_action("vel_lo", function(v) if v > params:get("vel_hi") then params:set("vel_hi", v) end end)
   params:set_action("vel_hi", function(v) if v < params:get("vel_lo") then params:set("vel_lo", v) end end)
 
+  params:add_group("ARC", 4)
+  add_control("arc_threshold", "arc sensitivity", 1, 64, 24)
+  add_control("arc_brightness", "arc brightness", 1, 15, 10)
+  add_control("arc_dim", "arc dim brightness", 0, 15, 2)
+  params:add{
+    type = "control", id = "arc_position", name = "arc position",
+    controlspec = controlspec.new(1, 4, "lin", 1, 1, "", 1 / 3),
+    formatter = function(param)
+      local positions = {"up", "right", "down", "left"}
+      return positions[param:get()]
+    end
+  }
+
   grid_ = GridLib:new()
   Display.init(4)
+  garc_ = GArc:new{
+    pages = ARC_PAGES,
+    threshold_id = "arc_threshold",
+    bright_id = "arc_brightness",
+    dim_id = "arc_dim",
+    position_id = "arc_position",
+    shift_fn = function() return is_shift end
+  }
 
   params:bang()
+  garc_:redraw() -- otherwise the arc stays dark until the first touch
 
   local seq_clock = lattice:new{ppqn = 96}
   for _, division in ipairs(divisions) do
@@ -125,14 +239,16 @@ function init()
   end)
 end
 
-local is_shift = false
-
 function enc(k, d)
   if k == 1 then
     if is_shift then
       sequencers[params:get("main_sequence")]:delta_param("midi_out_device", d)
     else
       params:delta("main_sequence", d)
+      -- every arc ring targets "whichever track is selected" -- refresh so
+      -- switching tracks doesn't leave the rings showing the old one's
+      -- values until the next arc turn
+      if garc_ then garc_:redraw() end
     end
   elseif k == 2 then
     if is_shift then
@@ -141,7 +257,7 @@ function enc(k, d)
       if params:get("main_play") == 1 then
         sequencers[params:get("main_sequence")]:delta_param("direction", d)
       else
-        sequencers[params:get("main_sequence")]:set_param("direction", d < 0 and 1 or 4)
+        sequencers[params:get("main_sequence")]:set_param("direction", d < 0 and 2 or 1) -- backward : forward
         sequencers[params:get("main_sequence")]:update(divisions[sequencers[params:get("main_sequence")]:get_param("division")])
       end
     end
@@ -173,23 +289,44 @@ function key(k, z)
   end
 end
 
+-- norns' standard transport hooks: fire on Link start/stop as well as MIDI
+-- clock start/stop when CLOCK source is set accordingly. the raw per-device
+-- MIDI start/stop handling in params_main() is separate and stays as-is
+-- (it works regardless of the global CLOCK source setting).
+function clock.transport.start()
+  params:set("main_play", 1)
+end
+
+function clock.transport.stop()
+  params:set("main_play", 0)
+end
+
 function redraw()
   screen.clear()
-  Display.draw(4)
 
   local current = sequencers[params:get("main_sequence")]
+  Display.draw(4)
 
-  screen.level(4)
-  screen.move(0, 7)
-  screen.text("track " .. params:get("main_sequence") .. (current:get_param("mute") == 1 and " * muted" or ""))
+  if params:get("show_header") == 1 then
+    screen.level(4)
+    screen.move(0, 7)
+    screen.text(tostring(params:get("main_sequence")))
 
-  screen.level(4)
-  screen.move(128, 7)
-  screen.text_right(string.format("%2.0f", last_cpu) .. "%")
+    screen.level(4)
+    screen.move(128, 7)
+    screen.text_right(string.format("%.0f", params:get("clock_tempo")) .. "bpm " ..
+      string.format("%2.0f", last_cpu) .. "%")
+  end
 
-  screen.level(2)
+  -- arc footer takes this line when there's one to show (it already covers
+  -- play/direction/division-equivalent info for whichever ring you're on);
+  -- otherwise fall back to the plain play/direction/division line so that
+  -- info doesn't disappear when no arc is connected
+  local footer = garc_ and garc_:footer_text()
+  screen.level(footer and 3 or 2)
   screen.move(0, 64 - 2)
-  screen.text(params:string("main_play") .. current:get_param_str("direction") .. " " .. current:get_param_str("division"))
+  screen.text(footer or (params:string("main_play") .. current:get_param_str("direction") .. " " ..
+    current:get_param_str("division")))
 
   screen.update()
 end
@@ -199,11 +336,28 @@ function rerun()
 end
 
 function cleanup()
+  for i = 1, 4 do sequencers[i]:panic() end
 end
 
 function table.reverse(t)
   local len = #t
   for i = len - 1, 1, -1 do t[len] = table.remove(t, i) end
+end
+
+-- forwards start/stop/continue to every port enabled under PARAMETERS >
+-- CLOCK > "midi out" (clock_midi_out_1..16 -- norns' own clock params,
+-- registered before this script's init() runs). that system-level setting
+-- already streams continuous MIDI clock ticks to those ports on its own;
+-- this just adds the transport message on top of it, so an arpeggiator
+-- synced to norns' clock also starts/stops with the sequencer's own
+-- play/stop instead of just free-running.
+local function send_transport(msg_type)
+  for i = 1, 16 do
+    if params:get("clock_midi_out_" .. i) == 1 then
+      local port = midi.vports[i]
+      if port then port[msg_type](port) end
+    end
+  end
 end
 
 function params_main()
@@ -223,7 +377,14 @@ function params_main()
     }, {
       id="play", name="play", min=0, max=1, exp=false, div=1, default=1,
       formatter=function(param) return param:get() == 0 and "" or "play " end,
-      action=function(v) if v == 0 then for i = 1, 4 do sequencers[i]:reset_timer() end end end
+      action=function(v)
+        if v == 0 then
+          for i = 1, 4 do sequencers[i]:reset_timer() end
+          send_transport("stop")
+        else
+          send_transport("start")
+        end
+      end
     }, {
       id="midi_input", name="midi input device", min=1, max=#midi_devices, exp=false, div=1, default=1,
       formatter=function(param) return midi_devices[param:get()] end
@@ -269,21 +430,13 @@ function params_main()
   params.action_write = function(filename, name)
     local data = {}
     for i = 1, 4 do data["sequence_" .. i] = sequencers[i]:marshal() end
-    filename = filename .. ".json"
-    local file = io.open(filename, "w+")
-    io.output(file)
-    io.write(json.encode(data))
-    io.close(file)
+    tab.save(data, filename .. ".data")
   end
 
   params.action_read = function(filename, silent)
-    filename = filename .. ".json"
+    filename = filename .. ".data"
     if not util.file_exists(filename) then do return end end
-    local f = io.open(filename, "rb")
-    local content = f:read("*all")
-    f:close()
-    if content == nil then do return end end
-    local data = json.decode(content)
+    local data = tab.load(filename)
     if data == nil then do return end end
     for i = 1, 4 do sequencers[i]:unmarshal(data["sequence_" .. i]) end
   end

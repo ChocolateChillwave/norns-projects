@@ -1,12 +1,11 @@
 -- display.lua
--- abstract orb display for polyphasic
+-- "Halide": glowing orbs over a faint dot-matrix field -- the physical
+-- pixel grid made just barely visible, closest of the concepts we tried to
+-- what the OLED looks like up close (see NOTES.md for the others).
 --
 -- lane (x) = track, height (y) = the scale row it just played,
 -- brightness/bloom = how recently + how hard it fired.
 -- velocity shapes both peak brightness and fade time (harder hit = brighter + longer).
---
--- ported from the browser prototype (canvas -> screen.*); geometry constants
--- match it 1:1 so it should look the same on-device.
 
 local Display = {}
 
@@ -14,12 +13,19 @@ Display.lane_x = {34, 58, 82, 106}
 Display.rows = 7
 Display.top_y = 12
 Display.bottom_y = 54
-Display.home_row = 3 -- middle row (0-indexed, 0..rows-1), drawn as a faint reference line
 
 local ATTACK = 0.045       -- seconds, fixed
 local DECAY_MIN = 0.22     -- seconds, at velocity 0
 local DECAY_MAX = 0.9      -- seconds, at velocity 1
 local REST_LEVEL = 2       -- screen.level of the resting/last-position dot
+
+-- the field redraws every frame, so spacing is chosen to stay cheap (a few
+-- dozen screen.pixel calls, not hundreds) rather than to match the denser
+-- browser mockup 1:1
+local FIELD_SPACING = 12
+local LANE_DOT_SPACING = 8
+local FIELD_TOP, FIELD_BOTTOM = 6, 58
+local FIELD_LEFT, FIELD_RIGHT = 4, 124
 
 local lamps = {}
 
@@ -43,7 +49,7 @@ function Display.init(num_tracks)
   lamps = {}
   for i = 1, num_tracks do
     lamps[i] = {
-      y = Display.row_y(Display.home_row),
+      y = Display.row_y(3),
       fired_at = nil,
       vel = 0,
       decay = DECAY_MIN
@@ -92,24 +98,42 @@ local function draw_orb(x, y, lit, vel)
   screen.fill()
 end
 
+-- the pixel grid made faintly visible everywhere, plus a slightly brighter
+-- column of dots marking each track's lane -- replaces the old solid lane
+-- lines + single home-row reference line
+local function draw_field()
+  screen.level(1)
+  local x = FIELD_LEFT
+  while x < FIELD_RIGHT do
+    local y = FIELD_TOP
+    while y < FIELD_BOTTOM do
+      screen.pixel(x, y)
+      y = y + FIELD_SPACING
+    end
+    x = x + FIELD_SPACING
+  end
+  screen.fill()
+
+  screen.level(2)
+  for _, lx in ipairs(Display.lane_x) do
+    local y = FIELD_TOP
+    while y < FIELD_BOTTOM do
+      screen.pixel(lx, y)
+      y = y + LANE_DOT_SPACING
+    end
+  end
+  screen.fill()
+end
+
 -- call from redraw(); does NOT call screen.update() so the caller can layer
--- other elements (cpu meter, track label, etc.) before flipping the frame
+-- other elements (track number, cpu meter, arc footer, etc.) before
+-- flipping the frame -- the track indicator lives in polyphasic.lua now,
+-- as plain text matching the bpm/cpu/arc-footer style, not a badge here.
 function Display.draw(num_tracks)
   screen.aa(1)
   screen.line_width(1)
 
-  -- faint per-track lane scaffolding
-  screen.level(1)
-  for _, x in ipairs(Display.lane_x) do
-    screen.move(x, 6)
-    screen.line(x, 58)
-    screen.stroke()
-  end
-
-  -- faint home-row reference line
-  screen.move(6, Display.row_y(Display.home_row))
-  screen.line(122, Display.row_y(Display.home_row))
-  screen.stroke()
+  draw_field()
 
   local t_now = now()
   for i = 1, num_tracks do

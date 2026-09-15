@@ -2,6 +2,12 @@ local MusicUtil = require "musicutil"
 
 local Sequence = {}
 
+-- how often a generated note (randomize/evolve) comes out as a short
+-- sustained/tied run instead of a lone single-step attack, and how long
+-- that run can be
+local SUSTAIN_CHANCE = 0.3
+local SUSTAIN_MAX_STEPS = 3
+
 function Sequence:new(args)
   local m = setmetatable({}, {__index=Sequence})
   local args = args == nil and {} or args
@@ -12,7 +18,17 @@ end
 
 function Sequence:init()
   self.sequence_max = 16 * 4 -- 16 steps, 4 measures
-  self.note_max = 7 * 6 -- 7-note scale across 6 octaves
+  -- 7-note scale across 7 octaves. note_lo/note_hi are indices into this pool
+  -- (see NOTES.md). capped at 7 octaves rather than pushed further: MusicUtil
+  -- silently stops generating once a note would exceed MIDI 127, so scale_full
+  -- can end up SHORTER than note_max for a high root_note or a scale with
+  -- fewer notes/octave than a 7-note one (a sparser scale needs more octaves,
+  -- hence more semitones, to reach the same note count) -- 7 octaves keeps
+  -- that from happening for any root_note this script allows (max 36) under a
+  -- 7-note/octave scale; sparser scales can still fall short at a high root
+  -- note, which is fine as long as nothing indexes scale_full past its real
+  -- length (see the nil-guards below and in note_on/formatters).
+  self.note_max = 7 * 7
   local scale_names = {}
   for i = 1, #MusicUtil.SCALES do table.insert(scale_names, string.lower(MusicUtil.SCALES[i].name)) end
 
@@ -48,6 +64,10 @@ function Sequence:init()
   self.note_limit = self.note_max
   self.note_offset = 21
   self.notes_on = {}
+  -- live grid-keyboard holds (see note_on_live/note_off_live and the
+  -- sustain check in update()) -- keyed by resolved matrix note_index
+  self.held_notes = {}
+  self.held_start_step = {}
   self.step_time_last = clock.get_beats()
   self.step_time_before_last = self.step_time_last
   self.midi_devices = {}
@@ -60,6 +80,14 @@ function Sequence:init()
   end
 
   self.matrix_previous = 1
+
+  -- scale_full can be shorter than note_max (see the comment on note_max
+  -- above) -- guards note_lo/note_hi's formatters against indexing past its
+  -- real end
+  local function note_name_at(index)
+    local note = self.scale_full[index]
+    return note and MusicUtil.note_num_to_name(note, true) or "--"
+  end
 
   -- setup parameters
   local params_menu = {
@@ -105,6 +133,35 @@ function Sequence:init()
         return param:get() == 1 and "muted" or "unmuted"
       end
     }, {
+      id="poly",
+      name="polyphony",
+      min=0,
+      max=1,
+      exp=false,
+      div=1,
+      default=0, -- mono
+      formatter=function(param)
+        return param:get() == 1 and "poly" or "mono"
+      end
+    }, {
+      id="clear",
+      name="clear",
+      min=0,
+      max=1,
+      exp=false,
+      div=1,
+      default=0,
+      formatter=function(param)
+        return param:get() == 0 and "turn e3" or "cleared!"
+      end,
+      action=function(v)
+        if v == 1 then self:clear() end
+        clock.run(function()
+          clock.sleep(1)
+          self:set_param("clear", 0)
+        end)
+      end
+    }, {
       id="randomize",
       name="randomize",
       min=0,
@@ -119,9 +176,25 @@ function Sequence:init()
         if v == 1 then
           self:clear()
           local density = math.random(90, 95) / 100
-          for i = 1, self.sequence_max do
-            for j = util.round(self.note_max * 1 / 4), util.round(self.note_max * 3 / 4) do
-              if math.random() > density then matrix[i][j] = 1 end
+          local note_lo, note_hi = self:get_param("note_lo"), self:get_param("note_hi")
+          for j = note_lo, note_hi do
+            -- a while-loop (not a plain for) so a step consumed by a
+            -- sustained run's tail isn't immediately re-rolled as its own
+            -- attack right after
+            local i = 1
+            while i <= self.sequence_max do
+              if math.random() > density then
+                self.matrix[i][j] = 1
+                local run = 0
+                if math.random() < SUSTAIN_CHANCE then run = math.random(1, SUSTAIN_MAX_STEPS) end
+                for k = 1, run do
+                  if i + k > self.sequence_max then break end
+                  self.matrix[i + k][j] = 2
+                end
+                i = i + run + 1
+              else
+                i = i + 1
+              end
             end
           end
         end
@@ -175,12 +248,12 @@ function Sequence:init()
       id="direction",
       name="direction",
       min=1,
-      max=4,
+      max=5,
       exp=false,
       div=1,
-      default=4,
+      default=1, -- forward
       formatter=function(param)
-        local directions = {"backward", "ping pong", "random", "forward"}
+        local directions = {"forward", "backward", "ping pong", "random", "brownian"}
         return directions[param:get()]
       end
     }, {
@@ -206,6 +279,26 @@ function Sequence:init()
         return param:get() * 100 .. "%"
       end
     }, {
+      id="note_lo",
+      name="note range lo",
+      min=1,
+      max=self.note_max,
+      exp=false,
+      div=1,
+      default=1,
+      formatter=function(param) return note_name_at(param:get()) end,
+      action=function(v) if v > self:get_param("note_hi") then self:set_param("note_hi", v) end end
+    }, {
+      id="note_hi",
+      name="note range hi",
+      min=1,
+      max=self.note_max,
+      exp=false,
+      div=1,
+      default=self.note_max,
+      formatter=function(param) return note_name_at(param:get()) end,
+      action=function(v) if v < self:get_param("note_lo") then self:set_param("note_lo", v) end end
+    }, {
       id="midi_out_device",
       name="midi out device",
       min=1,
@@ -230,7 +323,7 @@ function Sequence:init()
       max=16,
       exp=false,
       div=1,
-      default=self.id, -- tracks default to channel 1-4 respectively rather than all colliding on ch 1
+      default=1, -- all tracks default to ch 1; set per-track from PARAMETERS/arc if you want them split out
       formatter=function(param)
         return "ch " .. math.floor(param:get())
       end
@@ -302,15 +395,15 @@ function Sequence:get_param_str(v)
 end
 
 function Sequence:step_peek(step, movement)
-  if self:get_param("direction") == 4 then
+  if self:get_param("direction") == 1 then -- forward
     movement = 1
     step = step + 1
     while step > self:get_param("limit") do step = step - self:get_param("limit") end
-  elseif self:get_param("direction") == 1 then
+  elseif self:get_param("direction") == 2 then -- backward
     movement = -1
     step = step - 1
     while step < 1 do step = step + self:get_param("limit") end
-  elseif self:get_param("direction") == 2 then
+  elseif self:get_param("direction") == 3 then -- ping pong
     step = step + movement
     if step > self:get_param("limit") then
       step = self:get_param("limit") - 1
@@ -320,8 +413,15 @@ function Sequence:step_peek(step, movement)
       step = 2
       movement = 1
     end
-  elseif self:get_param("direction") == 3 then
+  elseif self:get_param("direction") == 4 then -- random
     step = math.random(1, self:get_param("limit"))
+  elseif self:get_param("direction") == 5 then -- brownian
+    -- brownian: random walk of -1/0/+1, wrapped (not clamped) at the loop
+    -- boundary so it doesn't pile up at the edges over time
+    local limit = self:get_param("limit")
+    step = step + math.random(0, 2) - 1
+    while step > limit do step = step - limit end
+    while step < 1 do step = step + limit end
   end
   return step, movement
 end
@@ -356,29 +456,45 @@ function Sequence:toggle_cell(step, note_index)
   end
 end
 
--- note_data is {note, note_index}
+-- note_data is {note, note_index, device, channel} -- device/channel captured
+-- at note-on time so a mid-note change to the track's midi out device or
+-- channel (shift+E1, or the channel param) can't strand the note on the
+-- device/channel it was actually sent to.
 function Sequence:note_off(note_data)
   local note = note_data[1]
-  if self.midi_out_device then
-    self.midi_out_device:note_off(note, 0, self:get_param("midi_out_channel"))
-  end
+  local device = note_data[3]
+  local channel = note_data[4]
+  if device then device:note_off(note, 0, channel) end
 end
 
 function Sequence:update(division, beat)
   if division ~= self.divisions[self:get_param("division")] then do return end end
-  -- if generating then remove a random note and replace with a new note
+  -- if generating then remove a random note and replace with a new note.
+  -- scoped to the currently active 1..limit steps, not the full sequence_max
+  -- buffer -- evolve should only touch what's actually playing (mutating a
+  -- banked/inactive step would be both inaudible and, for clear_note's tie
+  -- promotion, out of range of what left_step/right_step expect).
   if self:get_param("evolve") == 1 and math.random() > 0.9 then
+    local limit = self:get_param("limit")
+    local note_lo, note_hi = self:get_param("note_lo"), self:get_param("note_hi")
     -- find all the steps
     local steps = {}
-    for i = 1, self.sequence_max do
-      for j = 1, self.note_max do if self.matrix[i][j] > 0 then table.insert(steps, {i, j}) end end
+    for i = 1, limit do
+      for j = note_lo, note_hi do if self.matrix[i][j] > 0 then table.insert(steps, {i, j}) end end
     end
     if #steps > 0 then
       local random_step = steps[math.random(1, #steps)]
       self:clear_note(random_step[1], random_step[2])
-      local random_i = math.random(1, self.sequence_max)
-      local random_j = math.random(1, self.note_max)
+      local random_i = math.random(1, limit)
+      local random_j = math.random(note_lo, note_hi)
       self.matrix[random_i][random_j] = 1
+      if math.random() < SUSTAIN_CHANCE then
+        local run = math.random(1, SUSTAIN_MAX_STEPS)
+        for k = 1, run do
+          if random_i + k > limit then break end
+          self.matrix[random_i + k][random_j] = 2
+        end
+      end
     end
   end
   if self.step == self:get_param("limit") then
@@ -402,6 +518,17 @@ function Sequence:update(division, beat)
   local step_previous = self.step_last
   self.step_last = self.step
   self.step, self.movement = self:step_peek(self.step, self.movement)
+
+  -- live grid-keyboard hold: as long as a note is still held (see
+  -- note_on_live), tie it through every new step the sequencer advances to
+  -- -- skipping its own start step guards against a direction that can
+  -- revisit it (ping-pong/random/brownian) turning the attack into a tie
+  for note_index in pairs(self.held_notes) do
+    if self.step ~= self.held_start_step[note_index] then
+      self.matrix[self.step][note_index] = 2
+    end
+  end
+
   -- check which notes are activated
   local notes = {}
   local notes_sustained = {}
@@ -410,12 +537,21 @@ function Sequence:update(division, beat)
   for _, note_data in ipairs(self.notes_on) do
     if note_data[2] ~= nil then notes_on[note_data[2]] = note_data end
   end
-  for i = 1, self.note_limit do
+  local note_lo, note_hi = self:get_param("note_lo"), self:get_param("note_hi")
+  for i = note_lo, note_hi do
     if self.matrix[self.step_last][i] == 1 then
       table.insert(notes, i)
     elseif self.matrix[self.step_last][i] == 2 and can_tie and notes_on[i] ~= nil and self:get_param("mute") == 0 then
       notes_sustained[i] = true
     end
+  end
+
+  -- mono: at most one note at a time. a stacked chord in the same step only
+  -- keeps its first note, and any brand-new note chokes whatever's still
+  -- held/tied rather than layering on top of it.
+  if self:get_param("poly") == 0 then
+    if #notes > 1 then notes = {notes[1]} end
+    if #notes > 0 then notes_sustained = {} end
   end
 
   -- turn off previous notes
@@ -454,12 +590,25 @@ function Sequence:note_on(note_index)
   if self:get_param("mute") == 1 then do return end end
   if self:get_param("probability") < math.random() then do return end end
   local note = self.scale_full[note_index]
+  -- scale_full can be shorter than note_max (MusicUtil stops generating past
+  -- MIDI 127 -- see note_max's comment in init()), so a high note_lo/note_hi
+  -- or note_offset can point past its real end
+  if note == nil then do return end end
   local velocity = self.get_velocity and self.get_velocity() or 100
-  table.insert(self.notes_on, {note, note_index})
   if self.midi_out_device then
-    self.midi_out_device:note_on(note, velocity, self:get_param("midi_out_channel"))
+    local channel = self:get_param("midi_out_channel")
+    table.insert(self.notes_on, {note, note_index, self.midi_out_device, channel})
+    self.midi_out_device:note_on(note, velocity, channel)
   end
   if self.on_note then self.on_note(note_index, velocity) end
+end
+
+-- send note_off for anything still sounding (device/channel it was actually
+-- triggered on) and stop tracking it. call on script quit so a note that's
+-- mid-decay or mid-tie doesn't ring forever.
+function Sequence:panic()
+  for _, note_data in ipairs(self.notes_on) do self:note_off(note_data) end
+  self.notes_on = {}
 end
 
 function Sequence:clear_visible()
@@ -497,10 +646,37 @@ function Sequence:toggle_pos(step, row)
   self:toggle_cell(step, note_index)
 end
 
-function Sequence:toggle_note(note_index)
-  local step = self.step
-  local note_index = self:get_note_index(note_index)
-  self:toggle_cell(step, note_index)
+-- sets a deterministic sustained note across [step_lo, step_hi] at
+-- note_index: an attack at step_lo, tied continuation for every step after
+-- it. unlike toggle_cell this isn't a toggle -- it overwrites whatever was
+-- there, since the point is "make this whole span one held note."
+function Sequence:sustain_range(step_lo, step_hi, note_index)
+  self.matrix[step_lo][note_index] = 1
+  for s = step_lo + 1, step_hi do self.matrix[s][note_index] = 2 end
+end
+
+function Sequence:sustain_pos(step_lo, step_hi, row)
+  local note_index = (row + self.note_offset - 1) % self.note_limit + 1
+  self:sustain_range(step_lo, step_hi, note_index)
+end
+
+-- live grid-keyboard entry (bottom row, "play it like a MIDI controller"):
+-- press writes an attack at whatever step is current right now; holding it
+-- down ties it through subsequent steps as the sequencer advances (see the
+-- hold check in update()), so it sustains for as long as the key is held
+-- instead of a single-step blip. release just stops future ties -- it
+-- doesn't erase anything already written.
+function Sequence:note_on_live(note_index)
+  local resolved = self:get_note_index(note_index)
+  self.held_notes[resolved] = true
+  self.held_start_step[resolved] = self.step
+  self.matrix[self.step][resolved] = 1
+end
+
+function Sequence:note_off_live(note_index)
+  local resolved = self:get_note_index(note_index)
+  self.held_notes[resolved] = nil
+  self.held_start_step[resolved] = nil
 end
 
 function Sequence:get_note_index(note_index)

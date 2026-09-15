@@ -1,45 +1,16 @@
 -- local pattern_time = require("pattern")
+--
+-- grid step-entry gestures (see key_press below):
+--   tap a step: toggle a single-step attack on/off
+--   tap a step twice in a row: second tap ties it to the previous step
+--     (sustains the same pitch through) -- via Sequence:toggle_cell
+--   hold one step, tap a second: sustain the note across the whole span
+--     from the first tap through the second, instead of a separate attack
+--     at every step in between -- via Sequence:sustain_pos
+--   bottom row (keyboard row): press = attack at the current step; hold =
+--     sustains through every step visited while still held, release = ends
+--     it -- via Sequence:note_on_live/note_off_live
 local GGrid = {}
-
-local function gcd(a, b)
-  while b ~= 0 do a, b = b, a % b end
-  return a
-end
-
-local function get_line_coordinates(x1, y1, x2, y2)
-
-  local coordinates = {}
-
-  -- Determine if we need to swap points
-  if x1 > x2 then
-    x1, x2 = x2, x1
-    y1, y2 = y2, y1
-  end
-
-  if y1 == y2 then
-    for x = x1, x2 do table.insert(coordinates, {x, y1}) end
-    return coordinates
-  end
-
-  -- Calculate slope
-  local dx = x2 - x1
-  local dy = y2 - y1
-  local divisor = gcd(math.abs(dx), math.abs(dy))
-
-  -- Reduce dx and dy
-  dx = dx / divisor
-  dy = dy / divisor
-
-  -- Generate points for every whole number x
-  local x, y = x1, y1
-  while x <= x2 do
-    table.insert(coordinates, {x, math.floor(y + 0.5)}) -- Round y to nearest integer
-    x = x + 1
-    y = y + dy / math.abs(dx)
-  end
-
-  return coordinates
-end
 
 function GGrid:new(args)
   local m = setmetatable({}, {__index=GGrid})
@@ -111,8 +82,13 @@ function GGrid:key_press(row, col, on)
     end
   else
     if on and row == self.height and col < self.width - 1 then
-      -- toggle sequence from keyboard
-      self.sequencer:toggle_note(col)
+      -- play the keyboard row like a MIDI controller: press writes an
+      -- attack at the current step, and holding it down sustains through
+      -- every step the sequencer advances to while still held (see
+      -- note_on_live / the hold-tracking check in Sequence:update)
+      self.sequencer:note_on_live(col)
+    elseif not on and row == self.height and col < self.width - 1 then
+      self.sequencer:note_off_live(col)
     elseif on and row < self.height then
       -- check if other buttons are pressed
       local row_other = nil
@@ -127,18 +103,15 @@ function GGrid:key_press(row, col, on)
         end
       end
       if row_other ~= nil and col_other ~= nil then
-        local flipped_row_other = self.height - row_other
-        -- toggle range 
-        -- toggle each position between flipped_row_other,col_other and flipped_row,col
-        for i, coord in ipairs(get_line_coordinates(col_other, flipped_row_other, col, flipped_row)) do
-          print(i, coord[1], coord[2])
-          if i > 1 then
-            local x, y = coord[1], coord[2]
-            print(x, y)
-            local step_index = (x) + math.floor((self.sequencer.step - 1) / 16) * 16
-            self.sequencer:toggle_pos(step_index, y) -- Use flipped_row
-          end
-        end
+        -- two steps held at once: sustain the note from the first-pressed
+        -- step through the second (one attack, tied through to the last
+        -- step), at the pitch of whichever key is being pressed now --
+        -- rather than the old behavior of toggling on every individual
+        -- step in between, which just stacked separate attacks
+        local step_a = col_other + math.floor((self.sequencer.step - 1) / 16) * 16
+        local step_b = col + math.floor((self.sequencer.step - 1) / 16) * 16
+        local step_lo, step_hi = math.min(step_a, step_b), math.max(step_a, step_b)
+        self.sequencer:sustain_pos(step_lo, step_hi, flipped_row)
       else
         -- toggle specific position
         print(flipped_row, col)
