@@ -52,3 +52,21 @@ Full API index: https://monome.org/docs/norns/api/index.html
 - Don't add `mx.samples` or internal sample-engine code to MIDI-out-only scripts.
 - Don't hand-roll scale/chord math when `lib.musicutil` covers it.
 - Don't use `os.clock()` or raw Lua timers for musical timing — use `clock`.
+
+Repo structure
+
+This repo holds multiple standalone norns scripts, each in its own subfolder:
+
+norns-projects/
+├── CLAUDE.md          <- this file: shared coding conventions, applies to all scripts below
+├── README.md          <- git command reference
+├── chordflow/
+│   ├── chordflow.lua
+│   └── NOTES.md        <- chordflow-specific status, decisions, open questions
+├── polyphasic/
+│   ├── polyphasic.lua
+│   ├── lib/
+│   └── NOTES.md        <- polyphasic-specific status, decisions, open questions
+└── (future scripts follow the same pattern)
+
+Each script folder is independent — mirrors its counterpart in dust/code/<name> on the norns device. Coding conventions, API notes, and best practices in this file apply to all of them. Project-specific decisions, current status, and open questions belong in each script's own NOTES.md, not here — keeps this file stable while individual scripts evolve.
