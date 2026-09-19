@@ -25,6 +25,8 @@ behaviour reflected in both.
 - `cascade.lua` — params, grid/arc/screen wiring, strum settings
 - `lib/display.lua` — the string view (and the older dots), kept out of the
   script so a visual change can't touch timing
+- `lib/output.lua` — where notes go: MIDI, Just Friends over crow's ii bus,
+  or both. Shaped like a midi device so the engine can't tell the difference
 - `lib/chords.lua` — voicing banks, degree stacking, inversion, chord naming
 - `lib/patterns.lua` — strum patterns as timing slots, and the cycler that
   picks/blends them per repeat
@@ -229,6 +231,41 @@ is shared, so it's summarised in CLAUDE.md too and copied to polyphasic.
   lighting up, but it only writes to the hardware when the buffer differs.
   A still grid was doing 64 led writes plus a refresh 30 times a second.
 
+## Crow / Just Friends (2026-09-19)
+
+`lib/output.lua`. **Nothing in strum.lua changed to add this** — the output
+object is shaped like a norns midi device (`note_on`/`note_off`/`cc` with the
+same arguments), so the engine holds "a device" and never learns there's
+anything else. That was the whole reason to put a layer here rather than
+teach the engine about targets.
+
+- `target` param: midi / just friends / midi + jf.
+- JF's six voices suit an instrument whose screen draws six strings. Each
+  sounding note takes a voice and gives it back when it stops; a re-struck
+  pitch keeps the voice it already had, so a cycling strum doesn't churn
+  through them. Past six, the **oldest** voice is taken — a strum that runs
+  that long has moved on from its first note.
+- Pitch is 1V/oct with middle C at 0V. Velocity scales `jf level` (1-10V).
+- `jf note`: pluck sends nothing on release and lets JF's envelope end the
+  note; sustain closes the voice with level 0.
+- Handover is edge-triggered: `mode(1)` when JF becomes the target, `mode(0)`
+  when it stops being one **and on cleanup** — otherwise JF is left in ii
+  mode ignoring its own front panel after the script quits.
+- Every ii call goes through a guard, since crow is absent more often than
+  present. Tested with crow "unplugged": MIDI carries on regardless.
+
+**Two guesses hardware will settle**, both cheap to change:
+- Whether sustain should use level 0 as its note-off. `jf.trigger(ch, state)`
+  is the obvious alternative, but it carries no pitch, and assuming JF
+  remembers the last one is the sort of thing that's wrong. Level 0 needs no
+  such assumption.
+- Whether 1-10V is a sensible level range, and what default suits JF's own
+  gain staging. 5V is a guess.
+
+Not attempted: crow's own CV outputs. The bass split could drive a pitch/gate
+pair on outputs 1-2, which would pair nicely with chords on JF — worth doing
+once the JF side is confirmed working.
+
 ## Arc (the arc's own button cycles pages)
 
 For an arc without a pushbutton (older models): hold K2 and turn E2, in
@@ -384,6 +421,12 @@ touched again -- the param and midi gaps aren't cascade-specific.
   grid surface (including that C major shows no accidentals and A major
   shows three), latch, keys and encoders, K2+E2 paging without panicking,
   the bass split, voice leading across a progression, redraw and cleanup.
+- **`test_output.lua`**, 30 checks: routing to each target, JF handover being
+  edge-triggered and returned on shutdown, pitch and level mapping, the six
+  voices including stealing the oldest and reusing a re-struck pitch, pluck
+  vs sustain, panic, and surviving both a missing crow and a missing MIDI
+  device. The stub's `crow` records ii calls and `S.crow_present = false`
+  stands in for it being unplugged.
 - **`test_arc.lua`**, 31 checks on the shared arc module: fill at floor and
   ceiling, bipolar in both directions, discrete ticks, comet and dot, the
   track underlay, rotation, `poll()` redrawing only on a real change

@@ -381,15 +381,74 @@ params:set("visual", 1)
 params:set("strum_mode", 2)
 quiet()
 
+---------------------------------------------------------------- output
+section("output target")
+quiet()
+local function jf_plays()
+  local n = 0
+  for _, c in ipairs(S.crow_sent) do if c.fn == "jf.play_voice" then n = n + 1 end end
+  return n
+end
+
+params:set("target", 1)         -- midi
+clear(); S.crow_sent = {}
+press(1, 8); S.run_for(0.4)
+ok(#sounding() > 0 and jf_plays() == 0, "midi: notes go out over MIDI, crow is untouched")
+lift(1, 8); quiet()
+
+params:set("target", 2)         -- just friends
+clear(); S.crow_sent = {}
+press(1, 8); S.run_for(0.4)
+local midi_on = 0
+for _, e in ipairs(S.midi_sent) do if e.t == "on" then midi_on = midi_on + 1 end end
+ok(jf_plays() > 0, "just friends: the chord is played on JF voices (" .. jf_plays() .. ")")
+ok(midi_on == 0, "and nothing goes out over MIDI")
+lift(1, 8); quiet()
+
+params:set("target", 3)         -- both
+clear(); S.crow_sent = {}
+press(1, 8); S.run_for(0.4)
+midi_on = 0
+for _, e in ipairs(S.midi_sent) do if e.t == "on" then midi_on = midi_on + 1 end end
+ok(jf_plays() > 0 and midi_on > 0, "midi + jf: the chord goes to both at once")
+lift(1, 8); quiet()
+
+-- a chord bigger than JF's six voices still plays
+params:set("target", 2)
+params:set("bank", 13)          -- clusters, and two cells for a big pool
+clear(); S.crow_sent = {}
+press(1, 8); press(4, 4)
+S.run_for(0.5)
+ok(jf_plays() > 0, "a pool larger than six voices still sounds")
+lift(1, 8); lift(4, 4); quiet()
+params:set("bank", 4)
+
+params:set("target", 1)
+S.crow_sent = {}
+params:set("target", 2)
+local handed_over = false
+for _, c in ipairs(S.crow_sent) do
+  if c.fn == "jf.mode" and c.args[1] == 1 then handed_over = true end
+end
+ok(handed_over, "selecting JF hands it over to ii control")
+params:set("target", 3)         -- leave both on, so cleanup below sees MIDI too
+quiet()
+
 ---------------------------------------------------------------- cleanup
 section("cleanup")
 clear()
 press(1, 8); press(3, 8)
 S.run_for(0.4)
 ok(#sounding() > 0, "chords ringing before cleanup")
+S.crow_sent = {}
 try("cleanup() runs clean", cleanup)
 S.run_for(1)
 ok(#sounding() == 0, "cleanup silences everything")
+local gave_back = false
+for _, c in ipairs(S.crow_sent) do
+  if c.fn == "jf.mode" and c.args[1] == 0 then gave_back = true end
+end
+ok(gave_back, "and hands Just Friends back, rather than leaving it in ii mode")
 
 ---------------------------------------------------------------- done
 print(string.format("\n%d passed, %d failed", pass, fail))

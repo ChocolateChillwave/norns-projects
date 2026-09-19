@@ -1,6 +1,7 @@
 -- cascade
--- v0.8.0
--- strummed chord instrument, MIDI out
+-- v0.9.0
+-- strummed chord instrument: MIDI,
+-- or Just Friends via crow
 -- see MANUAL.md for full documentation
 --
 -- hold a grid cell (or an external MIDI
@@ -55,7 +56,9 @@
 -- played quieter and on fewer notes, like
 -- a real pick. off by default.
 --
--- in PARAMETERS: latch keeps chords
+-- in PARAMETERS: send to picks midi,
+-- just friends (six voices over crow's
+-- ii bus) or both; latch keeps chords
 -- playing after you let go (tap again to
 -- drop one, K2 clears all); voice lead
 -- places each chord near the one before
@@ -78,6 +81,7 @@ local Chords = include("cascade/lib/chords")
 local Patterns = include("cascade/lib/patterns")
 local Strum = include("cascade/lib/strum")
 local Display = include("cascade/lib/display")
+local Output = include("cascade/lib/output")
 local GridKeys = include("cascade/lib/gridkeys")
 local GArc = include("cascade/lib/garc")
 
@@ -99,6 +103,8 @@ local ONOFF_NAMES = {"off", "on"}
 local MODE_NAMES = {"one-shot", "cycle"}
 local RETRIGGER_NAMES = {"strum now", "next repeat"}
 local VISUAL_NAMES = {"strings", "dots", "off"}
+local TARGET_NAMES = {"midi", "just friends", "midi + jf"}
+local JF_NOTE_NAMES = {"pluck", "sustain"}
 
 -- strum spacing has its own division list, separate from the cycle repeat
 -- rate below. it reaches well past a real strum at the slow end -- a 1/4
@@ -128,6 +134,7 @@ local chord_midi = nil
 local midi_in = nil
 
 local strum_ = nil
+local output_ = nil
 local gridkeys_ = nil
 local garc_ = nil
 local ui_running = false
@@ -280,7 +287,7 @@ local function strum_opts()
   end
 
   return {
-    device = chord_midi,
+    device = output_,
     channel = util.round(params:get("chord_out_channel")),
     gap = gap,
     cycle = params:get("strum_mode") > 1.5,
@@ -324,8 +331,19 @@ local function build_device_options()
   end
 end
 
-local function refresh_midi_out()
+-- one object stands in for wherever notes go, so the strum engine only ever
+-- holds "a device" -- see lib/output.lua
+local function refresh_output()
+  if output_ == nil then return end
   chord_midi = midi.connect(params:get("chord_out_device"))
+  local target = util.round(params:get("target"))
+  output_:configure{
+    midi = (target == 1 or target == 3),
+    jf = (target == 2 or target == 3),
+    device = chord_midi,
+    jf_sustain = params:get("jf_note") > 1.5,
+    jf_level = params:get("jf_level"),
+  }
 end
 
 local function refresh_midi_in()
@@ -368,10 +386,12 @@ end
 local function init_params()
   build_device_options()
 
-  params:add_group("MIDI OUT", 4)
-  params:add_option("chord_out_device", "device", midi_device_options, 1)
-  params:set_action("chord_out_device", function() refresh_midi_out() end)
-  params:add_number("chord_out_channel", "channel", 1, 16, 1)
+  params:add_group("OUTPUT", 7)
+  add_control("target", "send to", 1, #TARGET_NAMES, 1, name_formatter(TARGET_NAMES))
+  params:set_action("target", function() refresh_output() end)
+  params:add_option("chord_out_device", "midi device", midi_device_options, 1)
+  params:set_action("chord_out_device", function() refresh_output() end)
+  params:add_number("chord_out_channel", "midi channel", 1, 16, 1)
   add_control("bass_channel", "bass channel", 0, 16, 0,
     function(param)
       local n = util.round(param:get())
@@ -379,6 +399,13 @@ local function init_params()
     end)
   add_control("bass_octave", "bass octave", -2, 1, 0,
     function(param) return string.format("%+d", util.round(param:get())) end)
+  -- Just Friends: pluck lets JF's own envelope end the note, sustain holds
+  -- it until cascade says otherwise
+  add_control("jf_note", "jf note", 1, 2, 1, name_formatter(JF_NOTE_NAMES))
+  params:set_action("jf_note", function() refresh_output() end)
+  add_control("jf_level", "jf level", 1, 10, 5,
+    function(param) return string.format("%d V", util.round(param:get())) end)
+  params:set_action("jf_level", function() refresh_output() end)
 
   params:add_group("MIDI IN", 1)
   params:add_option("midi_in_device", "device", midi_device_options, 1)
@@ -623,7 +650,7 @@ function key(n, z)
       k2_down = false
       if not k2_turned then
         held_labels = {}
-        strum_:panic(chord_midi)
+        strum_:panic(output_)
       end
     end
   elseif n == 3 and z == 1 then
@@ -639,7 +666,8 @@ end
 function init()
   math.randomseed(os.time())
   init_params()
-  refresh_midi_out()
+  output_ = Output.new()
+  refresh_output()
   refresh_midi_in()
   refresh_scale()
 
@@ -701,5 +729,6 @@ end
 
 function cleanup()
   ui_running = false
-  if strum_ then strum_:panic(chord_midi) end
+  if strum_ then strum_:panic(output_) end
+  if output_ then output_:shutdown() end
 end

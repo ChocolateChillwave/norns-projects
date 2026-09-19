@@ -486,6 +486,42 @@ function S.midi_in(dev, kind, note, vel)
   dev.event({(kind == "note_on") and 0x90 or 0x80, note, vel or 100})
 end
 
+---------------------------------------------------------------- crow
+-- crow is reached over USB and Just Friends over crow's ii bus; both just
+-- record what was sent. S.crow_present = false stands in for crow being
+-- unplugged, which scripts have to survive.
+S.crow_sent = {}
+S.crow_present = true
+
+local function crow_record(fn)
+  return function(...)
+    if not S.crow_present then return end
+    S.crow_sent[#S.crow_sent + 1] = {fn = fn, args = {...}, time = S.now}
+  end
+end
+
+crow = {ii = {jf = {}}, output = {}}
+for _, fn in ipairs({"mode", "play_voice", "play_note", "trigger", "run_mode",
+                     "run", "transpose", "vtrigger", "tick", "god_mode",
+                     "retune", "quantize"}) do
+  crow.ii.jf[fn] = crow_record("jf." .. fn)
+end
+for i = 1, 4 do
+  crow.output[i] = setmetatable({}, {
+    __newindex = function(t, k, v) crow_record("output." .. i .. "." .. k)(v) end,
+    __call = function() crow_record("output." .. i .. "()")() end,
+  })
+end
+
+-- every crow call of one kind, as a list of argument tables
+function S.crow_calls(fn)
+  local out = {}
+  for _, c in ipairs(S.crow_sent) do
+    if c.fn == fn then out[#out + 1] = c.args end
+  end
+  return out
+end
+
 ---------------------------------------------------------------- include
 -- scripts include their own libs by full dust path ("cascade/lib/chords"),
 -- so drop the leading script-folder segment and resolve from this script's

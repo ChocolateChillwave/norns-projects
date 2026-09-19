@@ -133,13 +133,16 @@ PARAMS menu or load a pset and the arc updates to match.
 
 ## 7. Parameter reference
 
-### MIDI OUT / MIDI IN
+### OUTPUT / MIDI IN
 | Parameter | Range | Default | Notes |
 |---|---|---|---|
-| chord device | — | 1 | Where chords are sent |
-| chord channel | 1–16 | 1 | |
-| bass channel | off, 1–16 | off | Sends the lowest note to its own channel |
+| send to | midi / just friends / midi + jf | midi | Where notes go |
+| midi device | — | 1 | Where chords are sent |
+| midi channel | 1–16 | 1 | |
+| bass channel | off, 1–16 | off | Sends the lowest note to its own MIDI channel |
 | bass octave | −2 to +1 | 0 | Drops the bass note by octaves |
+| jf note | pluck / sustain | pluck | Pluck lets JF's envelope end the note; sustain holds it until you let go |
+| jf level | 1–10 V | 5 V | How hard full velocity hits JF |
 | midi in device | — | 1 | Play chords from a keyboard |
 
 ### KEY
@@ -210,6 +213,31 @@ PARAMS menu or load a pset and the arc updates to match.
 | brightness | 1–15 | 15 | |
 | dim level | 1–15 | 4 | Unselected ticks |
 | position | 1–4 | 1 | Rotates rings a quarter turn, for how the arc sits |
+
+## 7b. Crow and Just Friends
+
+cascade can play Just Friends directly, over crow's ii bus.
+
+**Wiring:** crow connects to the norns over USB and is detected
+automatically — nothing to install. Run a 3-pin ii cable from crow's ii
+header to Just Friends', lining up GND, SCL and SDA; on monome cables the
+white stripe marks GND. Keep it short, and check the orientation against
+JF's manual before powering up. Crow supplies the bus power, so a crow and
+JF on their own need no powered bus board.
+
+**Playing it:** set **OUTPUT > send to** to `just friends`, or `midi + jf`
+to play a synth and JF together. Just Friends has six voices, so six notes
+sound at once — the same six the screen draws as strings. A bigger chord
+still plays; the oldest voice gets taken for the newest note.
+
+- **jf note** — `pluck` hands the note's length to JF's own envelope, so
+  its front panel decides how it decays. `sustain` holds each note until
+  you let the chord go.
+- **jf level** — how hard full velocity hits JF. Tilt, humanize and
+  velocity all still apply on the way.
+
+While JF is the target, cascade takes it over via ii; quitting the script
+hands it back so its front panel works normally again.
 
 ## 8. Chord banks
 
@@ -332,6 +360,10 @@ span 100%, note length 30%.
 | Want chords to keep playing hands-free | Turn on **latch**; tap again to drop one, K2 clears all |
 
 ## 13. Version history
+
+**v0.9.0** — Crow and Just Friends output: a `send to` parameter picks MIDI,
+Just Friends over crow's ii bus, or both. JF's six voices are allocated per
+note, with pluck or sustain note behaviour and a level setting.
 
 **v0.8.0** — Synced strum rates now reach down to 1/2, for arpeggio-slow
 strums. The arc keeps up with values changed anywhere else, and tilt and
