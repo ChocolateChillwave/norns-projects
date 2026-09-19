@@ -10,10 +10,22 @@
 -- envs, lfos, fx) + an NRPN
 -- STRUCT page (waves/filter
 -- shape, unverified, locked by
--- default). recipes bias the
--- random windows toward bass /
+-- default). randomize keeps every
+-- param inside a musical window
+-- (the ticks on its bar) -- in
+-- tune, audible, and not
+-- distorting -- rather than its
+-- whole CC range. recipes move
+-- those windows toward bass /
 -- pad / lead / pluck / perc /
--- drone, or "chaos" = full range.
+-- drone; "chaos" drops them.
+-- K3 cycles one param tame ->
+-- wide (hollow block, full
+-- range) -> locked (solid block,
+-- never randomized), and
+-- PARAMETERS > RANDOMIZE >
+-- "widen range" opens every
+-- window at once.
 --
 -- AFX (last page): play notes
 -- into norns (keyboard or a
@@ -31,7 +43,7 @@
 -- E2: select param
 -- E3: change value
 -- K2: randomize page
--- K3: lock/unlock param
+-- K3: tame / wide / locked
 -- K1+E1: recipe
 -- K1+E2: random amount
 -- K1+E3: morph time
@@ -242,12 +254,17 @@ end
 
 local function recipe_ranges()
   local name = Map.recipe_names[params:get("recipe")]
-  if name == "any" then return nil end
-  if name == "chaos" then
-    return function(s) return {s.desc.min, s.desc.max} end
-  end
+  -- chaos isn't a set of windows, it's the absence of them: see spread()
+  if name == "any" or name == "chaos" then return nil end
   local r = Map.recipes[name]
   return function(s) return r[s.desc.id] end
+end
+
+-- how far every tame window opens toward the full range: the "widen range"
+-- param, or all the way when the recipe is chaos
+local function spread()
+  if Map.recipe_names[params:get("recipe")] == "chaos" then return 1 end
+  return params:get("rnd_spread") / 100
 end
 
 local function rand_opts()
@@ -255,6 +272,7 @@ local function rand_opts()
     amount = params:get("rnd_amount") / 100,
     lo = params:get("rnd_lo") / 100,
     hi = math.max(params:get("rnd_lo"), params:get("rnd_hi")) / 100,
+    spread = spread(),
     beats = MORPH_BEATS[params:get("morph")],
     scope = "patch",
     ranges = recipe_ranges(),
@@ -372,9 +390,12 @@ local function add_params()
   params:add_trigger("send_all", "send all to summit")
   params:set_action("send_all", function() if core then send_all(); View.flash("SENT ALL") end end)
 
-  params:add_group("summitpatch_random", "RANDOMIZE", 8)
+  params:add_group("summitpatch_random", "RANDOMIZE", 9)
   params:add_option("recipe", "recipe", Map.recipe_names, 1)
   params:add_number("rnd_amount", "random amount", 0, 100, 100, pct)
+  -- 0% = each param's tame window (see lib/summit_map.lua), 100% = its
+  -- full CC range, which is what the "chaos" recipe forces
+  params:add_number("rnd_spread", "widen range", 0, 100, 0, pct)
   params:add_number("rnd_lo", "range low", 0, 100, 0, pct)
   params:add_number("rnd_hi", "range high", 0, 100, 100, pct)
   params:add_option("morph", "morph time (beats)", MORPH_NAMES, 1)
@@ -440,7 +461,7 @@ function init()
         local list, n
         if mode == 2 and page ~= AFX_PAGE then list, n = page_slots[page], 8
         else list, n = all_slots, #all_slots end
-        core:wander_step(list, n, params:get("wander_depth") / 100, beats)
+        core:wander_step(list, n, params:get("wander_depth") / 100, beats, spread())
       end
     end
   end)
@@ -496,8 +517,7 @@ function key(n, z)
       else
         local s = page_slots[page][sel]
         if s then
-          core:toggle_lock(s)
-          View.flash((core:is_locked(s) and "LOCKED " or "UNLOCKED ") .. s.desc.name)
+          View.flash(string.upper(core:cycle_mode(s)) .. " " .. s.desc.name)
         end
       end
     end
@@ -535,7 +555,11 @@ function redraw()
   else
     View.header(Map.pages[page].name, params:string("recipe") .. "  " .. page .. "/" .. NUM_PAGES)
     local list = page_slots[page]
-    for i = 1, 8 do View.slot(i, core, list[i], i == sel) end
+    local ranges = recipe_ranges()
+    for i = 1, 8 do
+      local s = list[i]
+      View.slot(i, core, s, i == sel, spread(), s and ranges and ranges(s) or nil)
+    end
     local foot
     if core:morphing() then
       foot = "morphing..."
@@ -543,6 +567,7 @@ function redraw()
       foot = "E1 recipe  K2 undo  K3 rnd all"
     else
       foot = "rnd " .. params:get("rnd_amount") .. "%  morph " .. params:string("morph")
+      if spread() > 0 then foot = foot .. "  wide " .. math.floor(spread() * 100) .. "%" end
       if params:get("wander") > 1 then foot = foot .. "  ~" end
     end
     View.footer(foot)

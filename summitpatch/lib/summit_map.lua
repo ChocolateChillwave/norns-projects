@@ -8,6 +8,22 @@
 -- randomize-all never touches it until you unlock params on purpose.
 --
 -- env naming: Summit's Env 1 = amp env, Env 2 = "Mod 1", Env 3 = "Mod 2".
+--
+-- TAMING POLICY (rmin/rmax + bias)
+-- min/max stays the real CC range so nothing is unreachable by hand;
+-- rmin/rmax is the slice randomize/wander may land in by default:
+--   * pitch stays put -- osc range/coarse and every pitch-mod depth start
+--     locked, and fine detune gets a narrow window, so a random patch is
+--     still in tune and still plays the note you asked for
+--   * amp attack biases short and sustain high, so a roll is audible when
+--     you press a key rather than a four-second swell you have to wait out
+--   * cutoff avoids the bottom of its range (silence) and biases up;
+--     resonance stays below self-oscillation
+--   * anything that gets loud fast -- distortion, filter drive/post-drive,
+--     noise and ring mod levels, delay feedback -- is capped low
+-- PARAMETERS > RANDOMIZE > "widen range" opens every window toward the
+-- full range at once, recipes replace the windows per param, and K3 on a
+-- single param cycles it tame -> wide -> locked.
 
 local Map = {}
 
@@ -25,117 +41,123 @@ local function nrpn(id, name, msb, lsb, max, opts)
   return t
 end
 
--- tuning params are locked by default so a first K1+K3 gives a playable
--- (in-tune) patch; unlock them for the full chaos
+-- shared windows
+local W_DETUNE = {58, 70}   -- fine/detune: audible beating, still in tune
+local W_PITCHMOD = {58, 70} -- only reached once these are unlocked
+local W_MODDEPTH = {54, 84} -- shape/filter mod depths, from centre upward
+local W_SHAPE = {40, 100}
+
 Map.pages = {
   {name = "OSC 1", slots = {
-    cc("o1_range", "RANGE", 3, {lock = true}),
-    cc("o1_coarse", "COARS", 14, {centered = true, lock = true}),
-    cc("o1_fine", "FINE", 15, {centered = true, lock = true}),
-    cc("o1_shape", "SHAPE", 12, {centered = true}),
-    cc("o1_m1shape", "E2>SH", 119, {centered = true}),
-    cc("o1_l1shape", "L1>SH", 33, {centered = true}),
-    cc("o1_vsync", "VSYNC", 34),
+    cc("o1_range", "RANGE", 3, {lock = true, rmin = 40, rmax = 90}),
+    cc("o1_coarse", "COARS", 14, {centered = true, lock = true, rmin = 58, rmax = 70}),
+    cc("o1_fine", "FINE", 15, {centered = true, rmin = W_DETUNE[1], rmax = W_DETUNE[2], bias = "center"}),
+    cc("o1_shape", "SHAPE", 12, {centered = true, rmin = W_SHAPE[1], rmax = W_SHAPE[2]}),
+    cc("o1_m1shape", "E2>SH", 119, {centered = true, rmin = W_MODDEPTH[1], rmax = W_MODDEPTH[2]}),
+    cc("o1_l1shape", "L1>SH", 33, {centered = true, rmin = W_MODDEPTH[1], rmax = W_MODDEPTH[2]}),
+    cc("o1_vsync", "VSYNC", 34, {rmin = 0, rmax = 40, bias = "low"}),
     false,
   }},
   {name = "OSC 2", slots = {
-    cc("o2_range", "RANGE", 37, {lock = true}),
-    cc("o2_coarse", "COARS", 17, {centered = true, lock = true}),
-    cc("o2_fine", "FINE", 18, {centered = true, lock = true}),
-    cc("o2_shape", "SHAPE", 39, {centered = true}),
-    cc("o2_m1shape", "E2>SH", 40, {centered = true}),
-    cc("o2_l1shape", "L1>SH", 41, {centered = true}),
-    cc("o2_vsync", "VSYNC", 42),
+    cc("o2_range", "RANGE", 37, {lock = true, rmin = 40, rmax = 90}),
+    cc("o2_coarse", "COARS", 17, {centered = true, lock = true, rmin = 58, rmax = 70}),
+    cc("o2_fine", "FINE", 18, {centered = true, rmin = W_DETUNE[1], rmax = W_DETUNE[2], bias = "center"}),
+    cc("o2_shape", "SHAPE", 39, {centered = true, rmin = W_SHAPE[1], rmax = W_SHAPE[2]}),
+    cc("o2_m1shape", "E2>SH", 40, {centered = true, rmin = W_MODDEPTH[1], rmax = W_MODDEPTH[2]}),
+    cc("o2_l1shape", "L1>SH", 41, {centered = true, rmin = W_MODDEPTH[1], rmax = W_MODDEPTH[2]}),
+    cc("o2_vsync", "VSYNC", 42, {rmin = 0, rmax = 40, bias = "low"}),
     false,
   }},
   {name = "OSC 3", slots = {
-    cc("o3_range", "RANGE", 65, {lock = true}),
-    cc("o3_coarse", "COARS", 20, {centered = true, lock = true}),
-    cc("o3_fine", "FINE", 21, {centered = true, lock = true}),
-    cc("o3_shape", "SHAPE", 71, {centered = true}),
-    cc("o3_m1shape", "E2>SH", 72, {centered = true}),
-    cc("o3_l1shape", "L1>SH", 73, {centered = true}),
-    cc("o3_vsync", "VSYNC", 44),
-    cc("o3_filter", "O3>FL", 76),
+    cc("o3_range", "RANGE", 65, {lock = true, rmin = 40, rmax = 90}),
+    cc("o3_coarse", "COARS", 20, {centered = true, lock = true, rmin = 58, rmax = 70}),
+    cc("o3_fine", "FINE", 21, {centered = true, rmin = W_DETUNE[1], rmax = W_DETUNE[2], bias = "center"}),
+    cc("o3_shape", "SHAPE", 71, {centered = true, rmin = W_SHAPE[1], rmax = W_SHAPE[2]}),
+    cc("o3_m1shape", "E2>SH", 72, {centered = true, rmin = W_MODDEPTH[1], rmax = W_MODDEPTH[2]}),
+    cc("o3_l1shape", "L1>SH", 73, {centered = true, rmin = W_MODDEPTH[1], rmax = W_MODDEPTH[2]}),
+    cc("o3_vsync", "VSYNC", 44, {rmin = 0, rmax = 40, bias = "low"}),
+    cc("o3_filter", "O3>FL", 76, {rmin = 0, rmax = 50, bias = "low"}),
   }},
+  -- every pitch-mod depth starts locked: these are what make a random
+  -- patch wander off-key or sweep out of the audible range
   {name = "PITCH MOD", slots = {
-    cc("o1_m2pitch", "1E3>P", 9, {centered = true, lock = true}),
-    cc("o1_l2pitch", "1L2>P", 16, {centered = true, lock = true}),
-    cc("o2_m2pitch", "2E3>P", 38, {centered = true, lock = true}),
-    cc("o2_l2pitch", "2L2>P", 19, {centered = true, lock = true}),
-    cc("o3_m2pitch", "3E3>P", 43, {centered = true, lock = true}),
-    cc("o3_l2pitch", "3L2>P", 22, {centered = true, lock = true}),
-    cc("glide_time", "GLIDE", 5, {rmax = 70}),
+    cc("o1_m2pitch", "1E3>P", 9, {centered = true, lock = true, rmin = W_PITCHMOD[1], rmax = W_PITCHMOD[2]}),
+    cc("o1_l2pitch", "1L2>P", 16, {centered = true, lock = true, rmin = W_PITCHMOD[1], rmax = W_PITCHMOD[2]}),
+    cc("o2_m2pitch", "2E3>P", 38, {centered = true, lock = true, rmin = W_PITCHMOD[1], rmax = W_PITCHMOD[2]}),
+    cc("o2_l2pitch", "2L2>P", 19, {centered = true, lock = true, rmin = W_PITCHMOD[1], rmax = W_PITCHMOD[2]}),
+    cc("o3_m2pitch", "3E3>P", 43, {centered = true, lock = true, rmin = W_PITCHMOD[1], rmax = W_PITCHMOD[2]}),
+    cc("o3_l2pitch", "3L2>P", 22, {centered = true, lock = true, rmin = W_PITCHMOD[1], rmax = W_PITCHMOD[2]}),
+    cc("glide_time", "GLIDE", 5, {rmin = 0, rmax = 40, bias = "low"}),
     cc("glide_on", "GL ON", 35, {lock = true}),
   }},
   {name = "MIX", slots = {
-    cc("mix_o1", "OSC1", 23),
-    cc("mix_o2", "OSC2", 24),
-    cc("mix_o3", "OSC3", 25),
-    cc("mix_ring", "RING", 26, {rmax = 90}),
-    cc("mix_noise", "NOISE", 27, {rmax = 80}),
+    cc("mix_o1", "OSC1", 23, {rmin = 70, rmax = 127, bias = "high"}),
+    cc("mix_o2", "OSC2", 24, {rmin = 30, rmax = 127}),
+    cc("mix_o3", "OSC3", 25, {rmin = 0, rmax = 110}),
+    cc("mix_ring", "RING", 26, {rmin = 0, rmax = 45, bias = "low"}),
+    cc("mix_noise", "NOISE", 27, {rmin = 0, rmax = 40, bias = "low"}),
     false,
-    cc("dist", "DIST", 104, {rmax = 90}),
+    cc("dist", "DIST", 104, {rmin = 0, rmax = 40, bias = "low"}),
     cc("arp_gate", "ARPGT", 116, {lock = true}),
   }},
   {name = "FILTER", slots = {
-    cc("cutoff", "FREQ", 29, {rmin = 15}),
-    cc("reso", "RESO", 79, {rmax = 110}),
-    cc("f_track", "TRACK", 75),
-    cc("f_drive", "DRIVE", 80, {rmax = 100}),
-    cc("f_post", "POST", 36, {rmax = 90}),
-    cc("f_env2", "E2>FL", 78, {centered = true}),
-    cc("f_lfo1", "L1>FL", 28, {centered = true}),
-    cc("f_env1", "E1>FL", 77, {centered = true}),
+    cc("cutoff", "FREQ", 29, {rmin = 45, rmax = 120, bias = "high"}),
+    cc("reso", "RESO", 79, {rmin = 0, rmax = 70, bias = "low"}),
+    cc("f_track", "TRACK", 75, {rmin = 30, rmax = 127}),
+    cc("f_drive", "DRIVE", 80, {rmin = 0, rmax = 50, bias = "low"}),
+    cc("f_post", "POST", 36, {rmin = 0, rmax = 50, bias = "low"}),
+    cc("f_env2", "E2>FL", 78, {centered = true, rmin = 64, rmax = 104}),
+    cc("f_lfo1", "L1>FL", 28, {centered = true, rmin = 54, rmax = 80}),
+    cc("f_env1", "E1>FL", 77, {centered = true, rmin = 54, rmax = 90}),
   }},
   {name = "AMP ENV", slots = {
-    cc("amp_a", "ATK", 86),
-    cc("amp_d", "DEC", 87),
-    cc("amp_s", "SUS", 88),
-    cc("amp_r", "REL", 89),
+    cc("amp_a", "ATK", 86, {rmin = 0, rmax = 25, bias = "low"}),
+    cc("amp_d", "DEC", 87, {rmin = 25, rmax = 110}),
+    cc("amp_s", "SUS", 88, {rmin = 50, rmax = 127, bias = "high"}),
+    cc("amp_r", "REL", 89, {rmin = 10, rmax = 70}),
     false, false,
     cc("anim1", "ANIM1", 114, {lock = true}),
     cc("anim2", "ANIM2", 115, {lock = true}),
   }},
   {name = "MOD ENVS", slots = {
-    cc("m1_a", "E2 A", 90),
-    cc("m1_d", "E2 D", 91),
-    cc("m1_s", "E2 S", 92),
-    cc("m1_r", "E2 R", 93),
-    cc("m2_a", "E3 A", 94),
-    cc("m2_d", "E3 D", 95),
-    cc("m2_s", "E3 S", 117),
-    cc("m2_r", "E3 R", 103),
+    cc("m1_a", "E2 A", 90, {rmin = 0, rmax = 40, bias = "low"}),
+    cc("m1_d", "E2 D", 91, {rmin = 20, rmax = 110}),
+    cc("m1_s", "E2 S", 92, {rmin = 0, rmax = 110}),
+    cc("m1_r", "E2 R", 93, {rmin = 0, rmax = 80}),
+    cc("m2_a", "E3 A", 94, {rmin = 0, rmax = 40, bias = "low"}),
+    cc("m2_d", "E3 D", 95, {rmin = 20, rmax = 110}),
+    cc("m2_s", "E3 S", 117, {rmin = 0, rmax = 110}),
+    cc("m2_r", "E3 R", 103, {rmin = 0, rmax = 80}),
   }},
   {name = "LFOS", slots = {
-    cc("l1_rate", "L1 RT", 30),
+    cc("l1_rate", "L1 RT", 30, {rmin = 20, rmax = 100}),
     cc("l1_sync", "L1 SY", 81, {lock = true}),
-    cc("l1_fade", "L1 FD", 82, {centered = true}),
+    cc("l1_fade", "L1 FD", 82, {centered = true, rmin = 54, rmax = 74}),
     false,
-    cc("l2_rate", "L2 RT", 31),
+    cc("l2_rate", "L2 RT", 31, {rmin = 20, rmax = 100}),
     cc("l2_sync", "L2 SY", 84, {lock = true}),
-    cc("l2_fade", "L2 FD", 85, {centered = true}),
+    cc("l2_fade", "L2 FD", 85, {centered = true, rmin = 54, rmax = 74}),
     cc("l2_range", "L2 RG", 83, {lock = true}),
   }},
   {name = "FX", slots = {
-    cc("cho_lvl", "CHO", 105),
-    cc("cho_rate", "CH RT", 118),
-    cc("cho_fb", "CH FB", 107, {rmax = 100}),
-    cc("rev_lvl", "REV", 112, {rmax = 110}),
-    cc("dly_lvl", "DLY", 108, {rmax = 100}),
+    cc("cho_lvl", "CHO", 105, {rmin = 0, rmax = 70}),
+    cc("cho_rate", "CH RT", 118, {rmin = 20, rmax = 90}),
+    cc("cho_fb", "CH FB", 107, {rmin = 0, rmax = 60, bias = "low"}),
+    cc("rev_lvl", "REV", 112, {rmin = 0, rmax = 70}),
+    cc("dly_lvl", "DLY", 108, {rmin = 0, rmax = 60}),
     cc("dly_time", "DL TM", 109),
-    cc("dly_fb", "DL FB", 110, {rmax = 105}),
-    cc("rev_time", "REV T", 113),
+    cc("dly_fb", "DL FB", 110, {rmin = 20, rmax = 70}),
+    cc("rev_time", "REV T", 113, {rmin = 30, rmax = 100}),
   }},
   {name = "STRUCT", nrpn_page = true, slots = {
-    nrpn("o1_wave", "O1 WV", 0, 14, 4, {labels = {"SIN", "TRI", "SAW", "PULS", "MORE"}}),
-    nrpn("o2_wave", "O2 WV", 0, 23, 4, {labels = {"SIN", "TRI", "SAW", "PULS", "MORE"}}),
-    nrpn("o3_wave", "O3 WV", 0, 32, 4, {labels = {"SIN", "TRI", "SAW", "PULS", "MORE"}}),
+    nrpn("o1_wave", "O1 WV", 0, 14, 4, {labels = {"SIN", "TRI", "SAW", "PULS", "MORE"}, rmax = 3}),
+    nrpn("o2_wave", "O2 WV", 0, 23, 4, {labels = {"SIN", "TRI", "SAW", "PULS", "MORE"}, rmax = 3}),
+    nrpn("o3_wave", "O3 WV", 0, 32, 4, {labels = {"SIN", "TRI", "SAW", "PULS", "MORE"}, rmax = 3}),
     nrpn("f_slope", "SLOPE", 0, 45, 1, {labels = {"12dB", "24dB"}}),
-    nrpn("f_shape", "SHAPE", 25, 9, 2, {labels = {"LP", "BP", "HP"}}),
-    nrpn("o1_dense", "DENSE", 0, 17, 127),
-    nrpn("o1_detune", "DETUN", 0, 18, 127),
-    nrpn("drift", "DRIFT", 0, 10, 127),
+    nrpn("f_shape", "SHAPE", 25, 9, 2, {labels = {"LP", "BP", "HP"}, rmax = 0}),
+    nrpn("o1_dense", "DENSE", 0, 17, 127, {rmin = 0, rmax = 60}),
+    nrpn("o1_detune", "DETUN", 0, 18, 127, {rmin = 0, rmax = 60}),
+    nrpn("drift", "DRIFT", 0, 10, 127, {rmin = 0, rmax = 60, bias = "low"}),
   }},
 }
 
@@ -157,8 +179,8 @@ for _, pg in ipairs(Map.pages) do
 end
 
 ---------------------------------------------------------------- recipes
--- per-recipe randomization windows {lo, hi} overriding a desc's rmin/rmax.
--- params not listed keep their normal window. "chaos" ignores every
+-- per-recipe randomization windows {lo, hi} replacing a desc's tame
+-- window. params not listed keep their tame window. "chaos" ignores every
 -- window and uses each param's full range (locks still apply).
 
 Map.recipe_names = {"any", "bass", "pad", "lead", "pluck", "perc", "drone", "chaos"}

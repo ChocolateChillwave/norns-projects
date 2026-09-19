@@ -5,10 +5,22 @@
 --
 -- vocabulary:
 --   desc  -- a parameter description from a device map:
---            {name, min, max, rmin?, rmax?, centered?, discrete?, lock?,
---             labels?, default?}
---            rmin/rmax = the "sane" randomization window (defaults to
---            min/max). lock = locked by default until the user toggles it.
+--            {name, min, max, rmin?, rmax?, bias?, centered?, discrete?,
+--             lock?, labels?, default?}
+--            rmin/rmax = the TAME window: the part of the range that stays
+--            musical, which is what randomize uses by default. min/max
+--            stay the full range the encoder can reach, so nothing is
+--            unreachable by hand -- taming only ever constrains the dice.
+--            bias = "low"/"high"/"center": shape of the draw inside the
+--            window (an envelope attack wants to land short far more often
+--            than long, even within a tame window). lock = starts locked.
+--
+--   mode  -- per param, cycled by the script's lock key:
+--            "tame"   randomize inside rmin..rmax, with bias (default)
+--            "wide"   randomize across the param's full min..max
+--            "locked" never randomized, never wandered
+--            a global `spread` (0..1) widens every tame window toward the
+--            full range at once; "wide" is that one param pinned at 1.
 --   slot  -- one addressable instance of a desc: {key=unique string,
 --            desc=desc, ...anything the owning script needs to send it
 --            (track, channel, cc...)}. pages are arrays of slots, with
@@ -23,7 +35,7 @@ Core.__index = Core
 function Core.new(opts)
   local self = setmetatable({}, Core)
   self.values = {}      -- key -> integer value (what we believe the device holds)
-  self.locks = {}       -- key -> 1/0 (explicit user choice; nil = use desc.lock)
+  self.modes = {}       -- key -> 1 tame / 2 wide / 3 locked (nil = desc default)
   self.undo = {}        -- scope -> list of {slot, value}
   self.morphs = {}      -- scope -> clock id
   self.send = opts.send
@@ -70,46 +82,92 @@ function Core:delta(slot, d)
   self:set(slot, util.clamp(self:get(slot) + d, desc.min, desc.max))
 end
 
-function Core:is_locked(slot)
-  local l = self.locks[slot.key]
-  if l == nil then return slot.desc.lock == true end
-  return l == 1
+Core.MODES = {"tame", "wide", "locked"}
+
+function Core:mode(slot)
+  local m = self.modes[slot.key]
+  if m == nil then return slot.desc.lock and "locked" or "tame" end
+  return Core.MODES[m]
 end
 
-function Core:toggle_lock(slot)
-  self.locks[slot.key] = self:is_locked(slot) and 0 or 1
+function Core:is_locked(slot) return self:mode(slot) == "locked" end
+
+-- tame -> wide -> locked -> tame. one key opens a param up for the dice or
+-- takes it out of play entirely, without burying either in a menu.
+function Core:cycle_mode(slot)
+  local m = self.modes[slot.key] or (slot.desc.lock and 3 or 1)
+  self.modes[slot.key] = (m % 3) + 1
+  self.on_change()
+  return self:mode(slot)
+end
+
+function Core:set_mode(slot, name)
+  for i, n in ipairs(Core.MODES) do
+    if n == name then self.modes[slot.key] = i end
+  end
   self.on_change()
 end
 
 ------------------------------------------------------------------ randomize
 
+-- the window randomize (and wander) may move a param inside. `spread` 0..1
+-- opens the tame window out toward the param's full range; a "wide" param
+-- is always fully open. an override (a recipe) replaces the map's window
+-- but is widened by spread just the same.
+function Core:window(slot, spread, override)
+  local d = slot.desc
+  local lo, hi
+  if override then lo, hi = override[1], override[2]
+  else lo, hi = d.rmin or d.min, d.rmax or d.max end
+  spread = self:mode(slot) == "wide" and 1 or (spread or 0)
+  if spread > 0 then
+    lo = lo + (d.min - lo) * spread
+    hi = hi + (d.max - hi) * spread
+  end
+  if lo > hi then lo, hi = hi, lo end
+  return lo, hi
+end
+
+-- shape a uniform draw inside the window. strength fades to 0 as the
+-- window opens up, so "wide"/"full" really is uniform across the range.
+local function shape(u, bias, strength)
+  if not bias or strength <= 0 then return u end
+  local b
+  if bias == "low" then b = u * u
+  elseif bias == "high" then b = 1 - (1 - u) * (1 - u)
+  else b = (u + math.random()) / 2 end -- center: triangular
+  return u + (b - u) * strength
+end
+
 -- amount 0..1: 1 = fresh random value, 0.25 = drift a quarter of the way
 -- from the current value toward a random one. for discrete params
 -- (waveforms, filter types) amount is the probability of re-rolling,
 -- since "a quarter of the way from SAW to SQUARE" isn't meaningful.
--- lo/hi 0..1 narrow the window further (MDPatch's CC min/max).
-function Core:roll(slot, amount, lo, hi, range_override)
+-- opts.lo/hi 0..1 narrow the window further (MDPatch's CC min/max).
+function Core:roll(slot, opts, range_override)
   local d = slot.desc
-  local rmin, rmax = d.rmin or d.min, d.rmax or d.max
-  if range_override then rmin, rmax = range_override[1], range_override[2] end
+  local lo, hi = self:window(slot, opts.spread, range_override)
   local cur = self:get(slot)
   if d.discrete then
-    if math.random() > amount then return cur end
-    return math.random(rmin, rmax)
+    if math.random() > opts.amount then return cur end
+    return math.random(util.round(lo), util.round(hi))
   end
-  local r = rmin + (lo + math.random() * (hi - lo)) * (rmax - rmin)
-  return util.round(util.clamp(cur + (r - cur) * amount, d.min, d.max))
+  local u = (opts.lo or 0) + math.random() * ((opts.hi or 1) - (opts.lo or 0))
+  u = shape(u, d.bias, 1 - (self:mode(slot) == "wide" and 1 or (opts.spread or 0)))
+  local r = lo + u * (hi - lo)
+  return util.round(util.clamp(cur + (r - cur) * opts.amount, d.min, d.max))
 end
 
 -- slots: array (may contain false holes), n = its length.
--- opts: {amount, lo, hi, beats, scope, ranges=fn(slot)->{lo,hi}|nil, keep_undo}
+-- opts: {amount, lo, hi, spread, beats, scope,
+--        ranges=fn(slot)->{lo,hi}|nil, keep_undo}
 function Core:randomize(slots, n, opts)
   local changes = {}
   for i = 1, n do
     local s = slots[i]
     if s and not self:is_locked(s) then
       local ov = opts.ranges and opts.ranges(s) or nil
-      changes[#changes + 1] = {slot = s, to = self:roll(s, opts.amount, opts.lo, opts.hi, ov)}
+      changes[#changes + 1] = {slot = s, to = self:roll(s, opts, ov)}
     end
   end
   if not opts.keep_undo then self:snapshot(opts.scope, slots, n) end
@@ -214,8 +272,10 @@ end
 ------------------------------------------------------------------ wander
 
 -- nudge one random unlocked continuous param in `slots` by up to
--- depth (0..1) of its full range, gliding over `beats`
-function Core:wander_step(slots, n, depth, beats)
+-- depth (0..1) of its window, gliding over `beats`. wander stays inside
+-- the same tame window randomize uses, so leaving it running doesn't
+-- slowly walk the sound somewhere extreme.
+function Core:wander_step(slots, n, depth, beats, spread)
   local pool = {}
   for i = 1, n do
     local s = slots[i]
@@ -223,19 +283,18 @@ function Core:wander_step(slots, n, depth, beats)
   end
   if #pool == 0 then return end
   local s = pool[math.random(#pool)]
-  local d = s.desc
-  local span = (d.max - d.min) * depth
-  local to = util.round(util.clamp(self:get(s) + (math.random() * 2 - 1) * span, d.min, d.max))
+  local lo, hi = self:window(s, spread)
+  local to = util.round(util.clamp(self:get(s) + (math.random() * 2 - 1) * (hi - lo) * depth, lo, hi))
   self:apply({{slot = s, to = to}}, beats, "wander:" .. s.key)
 end
 
 ------------------------------------------------------------------ persistence
 
--- locks are saved as 1/0 numbers (not booleans) so they round-trip
--- through tab.save unambiguously. `extra` lets a script stash its own
--- data (e.g. summitpatch's AFX offsets) in the same file.
+-- modes are saved as 1/2/3 numbers so they round-trip through tab.save
+-- unambiguously. `extra` lets a script stash its own data (e.g.
+-- summitpatch's AFX offsets) in the same file.
 function Core:save(path, extra)
-  tab.save({values = self.values, locks = self.locks, extra = extra}, path)
+  tab.save({values = self.values, modes = self.modes, extra = extra}, path)
 end
 
 function Core:load(path)
@@ -243,7 +302,11 @@ function Core:load(path)
   local t = tab.load(path)
   if not t then return nil end
   self.values = t.values or {}
-  self.locks = t.locks or {}
+  self.modes = t.modes or {}
+  -- files written before tame/wide/locked existed carry locks = 1/0
+  if t.locks then
+    for k, v in pairs(t.locks) do self.modes[k] = (v == 1) and 3 or 1 end
+  end
   self.undo = {}
   self.on_change()
   return t.extra

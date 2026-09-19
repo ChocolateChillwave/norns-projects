@@ -15,7 +15,7 @@
 -- E2: select param
 -- E3: change value
 -- K2: randomize page
--- K3: lock/unlock param
+-- K3: tame / wide / locked
 -- K1+E1: track
 -- K1+E2: random amount
 -- K1+E3: morph time
@@ -23,9 +23,16 @@
 -- K1+K3: randomize whole track
 --        (on an FX page: all FX)
 --
--- locked params (block left of
--- the name) are skipped by
--- randomize and wander.
+-- randomize keeps each param
+-- inside a musical window (the
+-- ticks on its bar), not its
+-- whole CC range. K3 cycles a
+-- param: tame -> wide (hollow
+-- block, full range) -> locked
+-- (solid block, never touched).
+-- PARAMETERS > RANDOMIZE >
+-- "widen range" opens every
+-- window at once.
 --
 -- Rytm setup: MIDI CONFIG >
 -- CHANNELS: tracks on 1-12
@@ -198,11 +205,14 @@ end
 
 ---------------------------------------------------------------- actions
 
+local function spread() return params:get("rnd_spread") / 100 end
+
 local function rand_opts(scope)
   return {
     amount = params:get("rnd_amount") / 100,
     lo = params:get("rnd_lo") / 100,
     hi = math.max(params:get("rnd_lo"), params:get("rnd_hi")) / 100,
+    spread = spread(),
     beats = MORPH_BEATS[params:get("morph")],
     scope = scope,
   }
@@ -264,8 +274,11 @@ local function add_params()
   params:add_trigger("send_all", "send all to rytm")
   params:set_action("send_all", function() send_all(); View.flash("SENT ALL") end)
 
-  params:add_group("rytmpatch_random", "RANDOMIZE", 9)
+  params:add_group("rytmpatch_random", "RANDOMIZE", 10)
   params:add_number("rnd_amount", "random amount", 0, 100, 100, function(p) return p:get() .. "%" end)
+  -- 0% = each param's tame window (see lib/rytm_map.lua), 100% = its full
+  -- CC range, i.e. the old free-for-all
+  params:add_number("rnd_spread", "widen range", 0, 100, 0, function(p) return p:get() .. "%" end)
   params:add_number("rnd_lo", "range low", 0, 100, 0, function(p) return p:get() .. "%" end)
   params:add_number("rnd_hi", "range high", 0, 100, 100, function(p) return p:get() .. "%" end)
   params:add_option("morph", "morph time (beats)", MORPH_NAMES, 1)
@@ -322,7 +335,7 @@ function init()
       local mode = params:get("wander")
       if mode > 1 then
         local list = mode == 2 and page_slots(page) or scope_slots(page)
-        core:wander_step(list, #list, params:get("wander_depth") / 100, beats)
+        core:wander_step(list, #list, params:get("wander_depth") / 100, beats, spread())
       end
     end
   end)
@@ -364,8 +377,7 @@ function key(n, z)
       else
         local s = page_slots(page)[sel]
         if s then
-          core:toggle_lock(s)
-          View.flash(core:is_locked(s) and ("LOCKED " .. s.desc.name) or ("UNLOCKED " .. s.desc.name))
+          View.flash(string.upper(core:cycle_mode(s)) .. " " .. s.desc.name)
         end
       end
     end
@@ -388,7 +400,7 @@ function redraw()
   View.header(left, page_name(page) .. " " .. page .. "/" .. NUM_PAGES)
 
   local list = page_slots(page)
-  for i = 1, 8 do View.slot(i, core, list[i], i == sel) end
+  for i = 1, 8 do View.slot(i, core, list[i], i == sel, spread()) end
 
   local foot
   if core:morphing() then
@@ -397,6 +409,7 @@ function redraw()
     foot = "K2 undo  K3 rnd " .. (is_fx_page(page) and "all fx" or "track")
   else
     foot = "rnd " .. params:get("rnd_amount") .. "%  morph " .. params:string("morph")
+    if params:get("rnd_spread") > 0 then foot = foot .. "  wide " .. params:get("rnd_spread") .. "%" end
     if params:get("wander") > 1 then foot = foot .. "  ~" end
   end
   View.footer(foot)

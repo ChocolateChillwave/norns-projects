@@ -51,8 +51,10 @@ end
 
 -- cell i (1..8). fields:
 --   name, text (value string), frac (0..1 bar fill), centered (bar grows
---   from the middle), selected, locked, empty
-function View.cell(i, name, text, frac, centered, selected, locked, empty)
+--   from the middle), selected, mode ("tame"/"wide"/"locked"), empty,
+--   window {lo, hi} as 0..1 fractions -- the slice randomize may land in,
+--   drawn under the bar so the taming is visible rather than implied
+function View.cell(i, name, text, frac, centered, selected, mode, empty, window)
   local x = COL_X[((i - 1) % 2) + 1]
   local y = ROW_Y[math.floor((i - 1) / 2) + 1]
   if empty then
@@ -61,11 +63,16 @@ function View.cell(i, name, text, frac, centered, selected, locked, empty)
     screen.text("-")
     return
   end
-  -- lock marker: small solid block left of the name
-  if locked then
+  -- mode marker left of the name: solid block = locked (out of play),
+  -- hollow = wide open, nothing = tame
+  if mode == "locked" then
     screen.level(selected and 10 or 5)
     screen.rect(x, y - 4, 2, 4)
     screen.fill()
+  elseif mode == "wide" then
+    screen.level(selected and 10 or 5)
+    screen.rect(x + 0.5, y - 3.5, 2, 3)
+    screen.stroke()
   end
   screen.level(selected and 15 or 5)
   screen.move(x + 4, y)
@@ -88,12 +95,22 @@ function View.cell(i, name, text, frac, centered, selected, locked, empty)
     screen.rect(bx, by, math.max(1, frac * bw), 1)
   end
   screen.fill()
+  -- window edges last, as ticks above/below the bar, so they stay legible
+  -- wherever the fill reaches
+  if window then
+    screen.level(selected and 8 or 3)
+    for _, f in ipairs(window) do
+      screen.rect(util.clamp(bx + f * bw, bx, bx + bw - 1), by - 1, 1, 3)
+      screen.fill()
+    end
+  end
 end
 
--- convenience: draw a patchcore slot
-function View.slot(i, core, slot, selected)
+-- convenience: draw a patchcore slot. `spread` is the script's global
+-- widen-the-window setting, so the ticks show the window actually in use.
+function View.slot(i, core, slot, selected, spread, range_override)
   if not slot then
-    View.cell(i, nil, nil, 0, false, false, false, true)
+    View.cell(i, nil, nil, 0, false, false, nil, true)
     return
   end
   local d = slot.desc
@@ -108,8 +125,18 @@ function View.slot(i, core, slot, selected)
   else
     text = tostring(v)
   end
-  local frac = (d.max > d.min) and (v - d.min) / (d.max - d.min) or 0
-  View.cell(i, d.name, text, frac, d.centered, selected, core:is_locked(slot), false)
+  local span = d.max - d.min
+  local frac = span > 0 and (v - d.min) / span or 0
+  local window
+  local mode = core:mode(slot)
+  if mode ~= "locked" and span > 0 then
+    local lo, hi = core:window(slot, spread, range_override)
+    -- a window that already spans everything says nothing worth drawing
+    if lo > d.min or hi < d.max then
+      window = {(lo - d.min) / span, (hi - d.min) / span}
+    end
+  end
+  View.cell(i, d.name, text, frac, d.centered, selected, mode, false, window)
 end
 
 return View
