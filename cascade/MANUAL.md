@@ -124,7 +124,12 @@ Two rings change what they edit depending on your settings:
   when it's off.
 
 Rings with only a few choices show as separate ticks; wider ones fill
-gradually.
+gradually. **Tilt** and **transpose** fill outward from the top in whichever
+direction the value sits, over a dim ring, since both run negative to
+positive and a one-sided fill would misread.
+
+The rings follow the values wherever they change — turn something in the
+PARAMS menu or load a pset and the arc updates to match.
 
 ## 7. Parameter reference
 
@@ -160,7 +165,7 @@ gradually.
 | latch | off / on | off | Chords keep playing after you let go |
 | strum sync | off / on | off | Lock the gap between notes to the clock |
 | strum rate | 0–200 ms | 25 ms | Gap between notes, when sync is off |
-| strum div | 1/16–1/128 | 1/64 | Gap between notes, when sync is on |
+| strum div | 1/2–1/128 | 1/64 | Gap between notes, when sync is on. The slow end is more arpeggio than strum |
 | fit to repeat | off / on | off | Size the strum to the repeat instead |
 | strum span | 5–100% | 50% | How much of each repeat the strum fills |
 | cycle sync | off / on | on | Lock the repeat to the clock |
@@ -327,6 +332,10 @@ span 100%, note length 30%.
 | Want chords to keep playing hands-free | Turn on **latch**; tap again to drop one, K2 clears all |
 
 ## 13. Version history
+
+**v0.8.0** — Synced strum rates now reach down to 1/2, for arpeggio-slow
+strums. The arc keeps up with values changed anywhere else, and tilt and
+transpose draw outward from centre instead of as a one-sided fill.
 
 **v0.7.0** — String view: the strum is drawn as vibrating strings with the
 rolling-shutter wobble a phone camera gives guitar strings. A new `visual`

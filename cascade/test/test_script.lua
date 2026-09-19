@@ -135,6 +135,31 @@ local off_region = false
 for _, l in ipairs(S.grid_leds) do if l[1] > 8 then off_region = true end end
 ok(not off_region, "and nothing is drawn in the right half")
 
+-- the grid rebuilds its levels every frame so it follows anything that
+-- changes them, but only writes to the hardware when they actually differ
+S.metros[1].event()             -- let the previous key change settle first
+S.grid_leds = {}
+S.metros[1].event()
+local idle_writes = #S.grid_leds
+ok(idle_writes == 0, "an unchanged grid costs no led writes (" .. idle_writes .. ")")
+
+press(2, 7)
+S.grid_leds = {}
+S.metros[1].event()
+ok(#S.grid_leds > 0, "pressing a key makes the next refresh redraw")
+lift(2, 7)
+S.grid_leds = {}
+S.metros[1].event()
+ok(#S.grid_leds > 0, "and so does releasing it")
+quiet()
+
+params:set("key_root", 4)       -- changed from the PARAMS menu, not the grid
+S.grid_leds = {}
+S.metros[1].event()
+ok(#S.grid_leds > 0, "changing the key from the menu redraws the grid too")
+params:set("key_root", 1)
+S.metros[1].event()
+
 ---------------------------------------------------------------- latch
 section("latch")
 quiet()

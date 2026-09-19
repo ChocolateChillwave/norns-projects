@@ -202,6 +202,33 @@ instead of flickering. It isn't how a string really moves, which is the point.
   is kept as the cheap fallback and `off` as the escape hatch if the Pi
   struggles, rather than making people choose between a visual and CPU.
 
+## Playability pass (2026-09-19)
+
+From the second hardware session. The arc work went into `lib/garc.lua` and
+is shared, so it's summarised in CLAUDE.md too and copied to polyphasic.
+
+- **Slower synced strum rates.** The division list stopped at 1/16, which is
+  still a fast strum; it now reaches 1/2. A 1/4 gap between notes is an
+  arpeggio rather than a strum, which turns out to be a useful place to go.
+  **The list grew at the slow end, so saved psets will read `strum div` one
+  or two steps off**; the default moved from 3 to 6 to stay on 1/64.
+- **Arc rings follow values that move elsewhere.** `GArc:poll()`, called from
+  the screen loop, compares the four ring values each frame and redraws only
+  on a change. Without it the rings showed whatever they last drew until
+  touched, so changing something from the PARAMS menu or loading a pset left
+  them lying. Cheap enough to run at 15fps: four param reads, and a redraw
+  only when something moved.
+- **Rendering styles for continuous rings.** `style = "bipolar" | "comet" |
+  "dot"` and `track = true` for a dim underlay. Default is still the plain
+  fill, so nothing looks different unless a page asks. Opted in here for
+  `tilt` and `transpose`, both signed, where a fill genuinely misleads — a
+  value just below centre lit most of the ring. Bipolar fills out from the
+  origin instead, with the track underneath so centre still reads as a dial.
+- **Grid skips redundant refreshes.** It still rebuilds its levels every
+  frame, so it follows the key changing from the menu or a latched chord
+  lighting up, but it only writes to the hardware when the buffer differs.
+  A still grid was doing 64 led writes plus a refresh 30 times a second.
+
 ## Arc (the arc's own button cycles pages)
 
 For an arc without a pushbutton (older models): hold K2 and turn E2, in
@@ -357,6 +384,12 @@ touched again -- the param and midi gaps aren't cascade-specific.
   grid surface (including that C major shows no accidentals and A major
   shows three), latch, keys and encoders, K2+E2 paging without panicking,
   the bass split, voice leading across a progression, redraw and cleanup.
+- **`test_arc.lua`**, 31 checks on the shared arc module: fill at floor and
+  ceiling, bipolar in both directions, discrete ticks, comet and dot, the
+  track underlay, rotation, `poll()` redrawing only on a real change
+  (including a resolver ring retargeting), turning a ring, the footer, and
+  that everything is safe with no arc plugged in. Worth copying to any
+  script that takes garc.
 - **`test_libs.lua`**, 32 checks: banks, degree stacking, in-key across 4
   scales x 12 keys x 15 roots, chromatic fallback, inversion, chord naming,
   voice leading, patterns and the cycler's morphing.

@@ -266,6 +266,9 @@ function init()
     while true do
       clock.sleep(1 / 15)
       redraw()
+      -- keeps the rings showing the real values when something else moves
+      -- them (PARAMS menu, pset load, an encoder); only redraws on a change
+      if garc_ then garc_:poll() end
     end
   end)
 end

@@ -41,10 +41,29 @@
 -- whole-step increments -- with a floor/ceiling fixup so the very bottom of
 -- the range still shows one lit LED (not indistinguishable from "off") and
 -- the very top reads as a fully lit ring.
+--
+-- a continuous ring can ask for a different look with `style`, which is
+-- worth doing when the plain fill misrepresents the value:
+--   "fill"     (default) origin to value. unchanged from before, so pages
+--              that don't ask for anything look exactly as they did
+--   "bipolar"  fills out from the origin in whichever direction the value
+--              sits. for anything signed -- tilt, transpose, a pan -- a
+--              fill reads as "80% of something" when the value means "a
+--              bit negative", and this doesn't
+--   "comet"    a bright head with the tail falling away behind it
+--   "dot"      just the head, for a position rather than an amount
+-- and `track = true` lays a dim ring underneath, so an empty or centred
+-- value still reads as a dial rather than as an arc that isn't connected.
+--
+-- values move for reasons other than the arc -- the PARAMS menu, a pset
+-- load, an encoder, a script's own automation -- so call GArc:poll() from
+-- whatever loop already drives the screen and the rings will follow. it
+-- compares four values and only redraws when one actually moved.
 local GArc = {}
 
 local LEDS_PER_RING = 64
 local DISCRETE_MAX_OPTIONS = 16 -- above this, fall back to continuous fill
+local COMET_TAIL = 8            -- leds a comet's tail fades over
 -- budget for a 128px-wide norns line. raised from an initial 22 after that
 -- cut scale names down to nothing useful -- this is still an estimate (no
 -- exact on-device character-width measurement), so say if it's still too
@@ -64,6 +83,8 @@ function GArc:new(args)
   m.page = 1
   m.accum = {0, 0, 0, 0}
   m.last_ring = 1
+  m.seen_id = {}      -- what poll() last saw on each ring, so it can tell
+  m.seen_value = {}   -- when a value moved without the arc being touched
 
   m.a = arc.connect()
   m.a.delta = function(n, d) m:_on_delta(n, d) end
@@ -133,18 +154,51 @@ end
 -- handling turned out not to reliably render a truly full or truly empty
 -- ring at the extremes) so the LED count at floor/ceiling is exact: 1 at
 -- minimum (never indistinguishable from "off"), all 64 at maximum.
-function GArc:_draw_continuous(ring_n, p, n)
+function GArc:_draw_continuous(ring_n, p, ring)
   local cs = p.controlspec
   local base = p:get_raw()
   local threshold = params:get(self.threshold_id)
-  local smooth = ((self.accum[n] or 0) / threshold) * cs.quantum
+  local smooth = ((self.accum[ring_n] or 0) / threshold) * cs.quantum
   local frac = clamp01(base + smooth)
-  local lit = math.max(1, util.round(frac * LEDS_PER_RING))
-  local rot_led = util.round(self:_rotation() / (math.pi * 2) * LEDS_PER_RING)
+
   local bright = params:get(self.bright_id)
-  for i = 0, lit - 1 do
-    local led = (i + rot_led) % LEDS_PER_RING + 1
-    self.a:led(ring_n, led, bright)
+  local dim = params:get(self.dim_id)
+  local rot_led = util.round(self:_rotation() / (math.pi * 2) * LEDS_PER_RING)
+  local function led_at(offset, level)
+    self.a:led(ring_n, (offset + rot_led) % LEDS_PER_RING + 1, level)
+  end
+
+  if ring.track then
+    for i = 0, LEDS_PER_RING - 1 do led_at(i, dim) end
+  end
+
+  local style = ring.style or "fill"
+
+  if style == "bipolar" then
+    -- the origin is the centre and the value runs out either side of it. a
+    -- fill would show a value just below centre as most of a ring.
+    local signed = frac * 2 - 1
+    local reach = util.round(math.abs(signed) * (LEDS_PER_RING / 2))
+    led_at(0, bright)
+    for i = 1, reach do led_at((signed >= 0) and i or -i, bright) end
+
+  elseif style == "dot" then
+    led_at(util.round(frac * (LEDS_PER_RING - 1)), bright)
+
+  elseif style == "comet" then
+    local lit = math.max(1, util.round(frac * LEDS_PER_RING))
+    for i = 0, lit - 1 do
+      local behind = lit - 1 - i
+      local level = bright
+      if behind > 0 then
+        level = math.max(dim, util.round(bright * (1 - behind / COMET_TAIL)))
+      end
+      led_at(i, level)
+    end
+
+  else
+    local lit = math.max(1, util.round(frac * LEDS_PER_RING))
+    for i = 0, lit - 1 do led_at(i, bright) end
   end
 end
 
@@ -161,12 +215,53 @@ function GArc:redraw()
         if count then
           self:_draw_discrete(n, p, count)
         else
-          self:_draw_continuous(n, p, n)
+          self:_draw_continuous(n, p, ring)
         end
       end
     end
   end
   self.a:refresh()
+  self:_snapshot()
+end
+
+-- what the rings are currently showing, so poll() can spot a value that
+-- moved without the arc being touched
+function GArc:_snapshot()
+  local page = self.pages[self.page]
+  for n = 1, 4 do
+    local ring = page.rings[n]
+    if ring then
+      local id = self:_ring_id(ring)
+      local p = params:lookup_param(id)
+      self.seen_id[n], self.seen_value[n] = id, p and p:get()
+    else
+      self.seen_id[n], self.seen_value[n] = nil, nil
+    end
+  end
+end
+
+-- call from the loop that already drives the screen. reading four values
+-- every frame is cheap; lighting 64 leds four times is not, so this only
+-- redraws when something actually changed. that keeps the rings honest
+-- when a value moves from the PARAMS menu, a pset load or an encoder --
+-- without it, the arc shows whatever it last drew until you touch it.
+function GArc:poll()
+  if self.a == nil or not self.a.device then return end
+  local page = self.pages[self.page]
+
+  for n = 1, 4 do
+    local ring = page.rings[n]
+    local id, value
+    if ring then
+      id = self:_ring_id(ring)
+      local p = params:lookup_param(id)
+      value = p and p:get()
+    end
+    if self.seen_id[n] ~= id or self.seen_value[n] ~= value then
+      self:redraw()
+      return
+    end
+  end
 end
 
 -- raw arc motion accumulates per-ring and only advances the param once it

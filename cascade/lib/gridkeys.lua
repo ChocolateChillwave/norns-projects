@@ -32,6 +32,15 @@ function GridKeys:new(args)
 
   m.held = {}
 
+  -- two buffers of levels, reused every frame rather than reallocated (see
+  -- CLAUDE.md's CPU note): one being drawn, one holding what's already on
+  -- the grid, so an unchanged frame can be skipped entirely
+  m.levels, m.shown = {}, {}
+  for x = 1, m.cols do
+    m.levels[x], m.shown[x] = {}, {}
+    for y = 1, m.rows do m.levels[x][y], m.shown[x][y] = 0, -1 end
+  end
+
   m.grid_refresh = metro.init()
   m.grid_refresh.time = midigrid and 0.12 or 0.03
   m.grid_refresh.event = function() m:grid_redraw() end
@@ -56,20 +65,37 @@ function GridKeys:key(x, y, z)
   end
 end
 
+-- the level buffer is rebuilt every frame so the grid follows anything that
+-- changes it -- a key going down, a latched chord, the key or scale being
+-- changed from the PARAMS menu -- but it's only pushed to the hardware when
+-- it actually differs from what's already there. the common case, a grid
+-- sitting still, costs a comparison instead of 64 led writes and a refresh.
 function GridKeys:grid_redraw()
   if self.g == nil or not self.g.device then return end
-  self.g:all(0)
+
+  local changed = false
   for x = 1, self.cols do
     for y = 1, self.rows do
       local level
       if self.held[x .. "," .. y] then
         level = 15
       elseif self.level_fn then
-        level = self.level_fn(x, y)
+        level = self.level_fn(x, y) or 0
       else
         level = 0
       end
-      if level and level > 0 then self.g:led(x, y, level) end
+      self.levels[x][y] = level
+      if self.shown[x][y] ~= level then changed = true end
+    end
+  end
+  if not changed then return end
+
+  self.g:all(0)
+  for x = 1, self.cols do
+    for y = 1, self.rows do
+      local level = self.levels[x][y]
+      self.shown[x][y] = level
+      if level > 0 then self.g:led(x, y, level) end
     end
   end
   self.g:refresh()

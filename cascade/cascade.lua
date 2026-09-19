@@ -1,5 +1,5 @@
 -- cascade
--- v0.7.0
+-- v0.8.0
 -- strummed chord instrument, MIDI out
 -- see MANUAL.md for full documentation
 --
@@ -497,7 +497,9 @@ local ARC_PAGES = {
   {
     name = "FEEL",
     rings = {
-      {label = "tilt", id = "tilt"},
+      -- tilt runs -100..100, so it gets the centred rendering: a plain fill
+      -- would show "slightly negative" as most of a lit ring
+      {label = "tilt", id = "tilt", style = "bipolar", track = true},
       {label = "human", id = "humanize"},
       {label = "prob", id = "probability"},
       {label = "vel", id = "velocity"},
@@ -518,7 +520,7 @@ local ARC_PAGES = {
       {label = "bank", id = "bank"},
       {label = "invert", id = "invert"},
       {label = "octave", id = "base_octave"},
-      {label = "transp", id = "transpose"},
+      {label = "transp", id = "transpose", style = "bipolar", track = true},
     },
   },
 }
@@ -690,6 +692,9 @@ function init()
     while ui_running do
       clock.sleep(1 / FPS)
       redraw()
+      -- keeps the rings showing the real values when something else moves
+      -- them (PARAMS menu, pset load, an encoder); only redraws on a change
+      if garc_ then garc_:poll() end
     end
   end)
 end
