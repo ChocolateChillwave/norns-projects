@@ -18,10 +18,10 @@
 -- field (see lib/display.lua and NOTES.md for the other concepts tried,
 -- including "Vanishing" -- a streetlamp-per-track scene -- which shipped
 -- briefly and was reverted for feeling convoluted next to this one).
--- track number + mute state show as a small glowing corner badge instead
--- of a text line; bpm/cpu% is hideable via PARAMETERS > DISPLAY >
--- "show bpm/cpu"; the bottom line shows the arc's footer when one's
--- connected, or falls back to play/direction/division when it isn't.
+-- track number (top-left), bpm (top-right), and cpu% (top-right) are each
+-- independently hideable via PARAMETERS > DISPLAY; the bottom line shows
+-- the arc's footer when one's connected, or falls back to
+-- play/direction/division when it isn't.
 --
 --    ▼ instructions below ▼
 --
@@ -78,11 +78,28 @@ local function add_control(id, name, min, max, default, unit)
   }
 end
 
--- shared by all four tracks: every grid-triggered note draws a random
--- velocity from this range. external MIDI input notes carry their own
--- real velocity and never call this.
-local function random_velocity()
-  return math.random(params:get("vel_lo"), params:get("vel_hi"))
+-- shared by all four tracks: every grid-triggered note draws its velocity
+-- from this range, shaped by the global vel_curve. external MIDI input
+-- notes carry their own real velocity and never call this.
+--
+-- curve position is per-track: it reads the calling sequence's own current
+-- step and limit, so each track ramps/cycles across its own loop length
+-- rather than sharing one global phase -- "random" (the original behavior)
+-- ignores step/limit entirely, same as before this existed.
+local function curve_velocity(seq)
+  local lo, hi = params:get("vel_lo"), params:get("vel_hi")
+  local curve = params:get("vel_curve")
+  if curve == 1 then return math.random(lo, hi) end -- random
+
+  local limit = seq:get_param("limit")
+  local phase = limit > 1 and (seq.step_last - 1) / (limit - 1) or 0
+  local t
+  if curve == 2 then t = phase                              -- ramp up
+  elseif curve == 3 then t = 1 - phase                       -- ramp down
+  elseif curve == 4 then t = 1 - math.abs(2 * phase - 1)     -- triangle
+  elseif curve == 5 then t = math.sin(phase * math.pi)       -- sine (smoothed triangle)
+  else t = 0.5 end
+  return util.round(lo + t * (hi - lo))
 end
 
 local function make_on_note(track_id)
@@ -141,7 +158,7 @@ local ARC_PAGES = {
       {label = "root", id = track_field("root_note"), all_ids = all_track_fields("root_note")}
     }
   }, {
-    name = "PERFORMANCE",
+    name = "PERF", -- "PERFORMANCE" ate too much of the arc footer's character budget
     rings = {
       {label = "track", id = "main_sequence"}, -- global: changes which track every other page's rings act on
       {label = "clear", id = track_field("clear"), all_ids = all_track_fields("clear")},
@@ -160,25 +177,39 @@ function init()
       id = i,
       divisions = divisions,
       divisions_strings = divisions_strings,
-      get_velocity = random_velocity,
+      get_velocity = curve_velocity,
       on_note = make_on_note(i)
     }
   end
 
   params_main()
 
-  params:add_group("DISPLAY", 1)
-  params:add{
-    type = "control", id = "show_header", name = "show bpm/cpu",
-    controlspec = controlspec.new(0, 1, "lin", 1, 1, "", 1),
-    formatter = function(param) return param:get() == 1 and "on" or "off" end
-  }
+  params:add_group("DISPLAY", 3)
+  for _, p in ipairs({
+    {id = "show_track", name = "show track number"},
+    {id = "show_bpm", name = "show bpm"},
+    {id = "show_cpu", name = "show cpu%"}
+  }) do
+    params:add{
+      type = "control", id = p.id, name = p.name,
+      controlspec = controlspec.new(0, 1, "lin", 1, 1, "", 1),
+      formatter = function(param) return param:get() == 1 and "on" or "off" end
+    }
+  end
 
-  params:add_group("polyphasic", 2)
+  params:add_group("polyphasic", 3)
   add_control("vel_lo", "velocity lo", 1, 127, 40)
   add_control("vel_hi", "velocity hi", 1, 127, 110)
   params:set_action("vel_lo", function(v) if v > params:get("vel_hi") then params:set("vel_hi", v) end end)
   params:set_action("vel_hi", function(v) if v < params:get("vel_lo") then params:set("vel_lo", v) end end)
+  params:add{
+    type = "control", id = "vel_curve", name = "velocity curve",
+    controlspec = controlspec.new(1, 5, "lin", 1, 1, "", 1 / 4),
+    formatter = function(param)
+      local curves = {"random", "ramp up", "ramp down", "triangle", "sine"}
+      return curves[param:get()]
+    end
+  }
 
   params:add_group("ARC", 4)
   add_control("arc_threshold", "arc sensitivity", 1, 64, 24)
@@ -307,15 +338,24 @@ function redraw()
   local current = sequencers[params:get("main_sequence")]
   Display.draw(4)
 
-  if params:get("show_header") == 1 then
+  if params:get("show_track") == 1 then
     screen.level(4)
     screen.move(0, 7)
     screen.text(tostring(params:get("main_sequence")))
+  end
 
+  local show_bpm = params:get("show_bpm") == 1
+  local show_cpu = params:get("show_cpu") == 1
+  if show_bpm or show_cpu then
+    local right_text = ""
+    if show_bpm then right_text = string.format("%.0f", params:get("clock_tempo")) .. "bpm" end
+    if show_cpu then
+      if show_bpm then right_text = right_text .. " " end
+      right_text = right_text .. string.format("%2.0f", last_cpu) .. "%"
+    end
     screen.level(4)
     screen.move(128, 7)
-    screen.text_right(string.format("%.0f", params:get("clock_tempo")) .. "bpm " ..
-      string.format("%2.0f", last_cpu) .. "%")
+    screen.text_right(right_text)
   end
 
   -- arc footer takes this line when there's one to show (it already covers

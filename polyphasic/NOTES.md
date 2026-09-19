@@ -27,7 +27,8 @@
   baked background image + live glow) — Vanishing shipped, worked, but felt
   convoluted in practice and was reverted back to Halide. See Fixed/Added
   entries below for what Vanishing involved, in case it's worth another look
-  later (the background image is still at polyphasic/img/).
+  later (its background image was deleted 2026-09-17 in a repo tidy-up —
+  recoverable from commit 5e20ca0 at polyphasic/img/).
 - Interface kept minimal, visual style inspired by Torso Electronic S4
 
 ## Open items
@@ -39,6 +40,15 @@
   via the bottom-right grid button) that steps through a programmable order of banks
   automatically. Might already cover part of what "multiple sequences per track" means,
   might not — evaluate that existing mechanism first before building something new.
+  2026-09-15: confirmed as a "circle back later" idea specifically as progression
+  banks — each bank labeled/used as a chord slot, chain mode auto-stepping the
+  progression. Not started.
+- Arc page reorganization — flagged 2026-09-15, not started. Current pages
+  (PLAY/MIX/RANGE/PERFORMANCE) were laid out by params-menu category, not by
+  what's actually reached for while jamming/performing; worth rethinking the
+  grouping around live performance use once there's a backlog of candidates
+  worth reorganizing around (this session added vel_curve and link_track as
+  PARAMETERS-only, deliberately not placed on arc yet, partly for this reason).
 - Vanishing, if it's ever revisited: reverted 2026-09-15 for feeling convoluted
   next to Halide, not because it was broken. Unresolved when it was pulled: the
   lamp head/base coordinates in what was `Display.lamp_pos` were read off the
@@ -46,8 +56,11 @@
   script) and weren't confirmed pixel-accurate on a real screen before the
   revert, and it was still an open question whether 4 lamps read as 4 distinct
   tracks without an extra differentiator (line weight, height, label). The
-  background image is still at polyphasic/img/rainy_city_128x64_pixel_art.png
-  if it's worth returning to.
+  background image (rainy_city_128x64_pixel_art.png) was deleted 2026-09-17
+  along with the rest of the repo's unused images — nothing loaded it once
+  Vanishing was reverted. Restore it from commit 5e20ca0 if this is ever
+  picked back up:
+  `git checkout 5e20ca0 -- polyphasic/img/`
 - Odd (non-triplet) divisions — scrapped for now (2026-09-15), may revisit later.
 - Euclidean pattern mode per track — skipped for now (2026-09-15).
 - Arc: no page-cycle fallback for an arc without its own pushbutton (K1 is already the
@@ -79,6 +92,53 @@
   (about the underlying clock math, not display text) and stays as-is.
 
 ## Added (2026-09-15)
+- Split the single `show_header` toggle into three independent DISPLAY params
+  (`show_track`, `show_bpm`, `show_cpu`) — hiding bpm/cpu was also hiding the
+  track number, which wasn't wanted. `redraw()` now checks each separately;
+  bpm and cpu still share one line/one `screen.text_right` call when both are
+  on (unchanged look), but the string is only built from whichever of the two
+  is actually enabled.
+- Arc footer no longer runs off-screen (was noticed on "randomize": "PERFORMANCE
+  randomize: randomized!" is 35 characters, well past what a 128px line holds).
+  `GArc:footer_text()` (garc.lua) now hard-truncates to a `FOOTER_MAX_CHARS`
+  budget (22 initially, raised to 30 after that cut scale names down to
+  nothing useful in practice — still an estimate, no exact on-device
+  character-width measurement, may need another pass) with a plain "..." (not
+  a single
+  ellipsis glyph — not dependent on the active font having that character), so
+  *any* verbose formatted value is bounded, not just today's known case.
+  First pass dropped the page name entirely to make room; felt too stripped
+  in practice, so page name + ring label + the `[ALL]` broadcast tag (if
+  present) are back and always shown in full — only the formatted *value* at
+  the end ever gets trimmed, since that's both the likeliest-to-be-long part
+  and the one you can already read off the arc's own ring. Also shortened the
+  PERFORMANCE page's own name to "PERF" (footer-only; nothing else displayed
+  the full name) since at 11 characters it alone was eating half the budget.
+- Velocity curve, global (`vel_curve` param, "polyphasic" group, alongside
+  vel_lo/vel_hi): random (original behavior), ramp up, ramp down, triangle,
+  sine (a smoothed triangle). Curve *type* is global but curve *position* is
+  per-track — each track ramps/cycles across its own `limit` and current step,
+  not a shared phase, since tracks can have different loop lengths. Required
+  changing `get_velocity`'s call signature from `self.get_velocity()` to
+  `self.get_velocity(self)` (in `Sequence:note_on`) so the curve function can
+  read the calling track's own step/limit — `curve_velocity` in polyphasic.lua
+  replaces the old `random_velocity`. Other curve shapes considered but not
+  built (say if any are wanted): accent/pulse (peak on step 1 or every Nth
+  step), alternating strong/weak (swing-like), random walk (smoothed random —
+  each pick a small step from the last, instead of fully independent draws).
+- Per-track `link_track` param (0 = off, 1-4 = which other track): when set,
+  `randomize` and `evolve` bias their generation toward pitches already
+  present in the linked track, instead of picking uniformly at random —
+  opt-in, off by default, existing unlinked behavior is unchanged either way.
+  `randomize` lowers the density threshold for linked pitches (more likely to
+  land, not guaranteed); `evolve` has a 70% chance (`LINK_EVOLVE_CHANCE`) of
+  picking its replacement note from the linked track's current pitches when
+  any are in range, else falls back to a fully independent pick. New
+  `Sequence:linked_note_set()` reads the linked track via the global
+  `sequencers` table (same ambient-global pattern already used for
+  params/midi/clock in this file, not threaded through the constructor) and
+  scans that track's *entire* matrix, not just its active loop — "what
+  pitches is that track using" in general, not just this instant.
 - Display redesign, round 2: "Vanishing" implemented, superseding Halide the same
   day it shipped. A user-generated pixel-art image (a rainy night road with 4
   streetlamps, grayscale, prompted from the coordinate/composition spec built
@@ -238,6 +298,18 @@
   centered). Narrow the range per-track if you want the old centered-ish feel back.
 
 ## Fixed
+- Grid LED crash when manually entering notes with evolve + chained link_track
+  on (2026-09-15, traceback: `ggrid.lua:178: attempt to perform arithmetic on
+  a nil value`). Same root cause as the earlier musicutil crash — `scale_full`
+  can be shorter than `note_max` (MusicUtil stops generating past MIDI 127) —
+  but in a spot that fix didn't reach: `GGrid:get_visual()` indexes
+  `scale_full[note_index]` twice (the main step grid's LED level, and the
+  bottom keyboard row's LED level) with no nil-guard. Evolve pushing notes
+  toward the edges of a track's range, especially compounded by link_track
+  biasing several tracks toward each other, made an out-of-range note_index
+  much easier to hit than in ordinary play. Both spots now skip drawing (or
+  fall back to unlit) when `scale_full[note_index]` is nil instead of
+  crashing, matching the guard pattern already used in sequence.lua.
 - Arc ring rendering, three issues from the first hardware test (2026-09-15):
     - Fine-grained params (probability: 0-1 by 0.01) flashed/strobed while turning —
       the ring-fill smoothing used a flat `1/range` as "how much of the ring one

@@ -156,8 +156,12 @@ function GGrid:get_visual()
         for j = 1, self.height - 1 do
           local note_index = self.sequencer:get_note_index(self.height - j)
           local note_value = self.sequencer.matrix[i + step_offset][note_index]
-          if note_value > 0 then
-            local level = 12 - (self.sequencer.scale_full[note_index] % 12) + 2
+          local note = self.sequencer.scale_full[note_index]
+          -- scale_full can be shorter than note_max (MusicUtil stops
+          -- generating past MIDI 127 -- see note_max's comment in
+          -- sequence.lua), so a high note_index can point past its real end
+          if note_value > 0 and note then
+            local level = 12 - (note % 12) + 2
             self.visual[j][i] = note_value == 2 and math.max(2, util.round(level / 3)) or level
           end
         end
@@ -175,7 +179,8 @@ function GGrid:get_visual()
       -- show keyboard
       for col = 1, self.width - 1 do
         local note_index = self.sequencer:get_note_index(col)
-        self.visual[self.height][col] = 12 - (self.sequencer.scale_full[note_index] % 12) + 2
+        local note = self.sequencer.scale_full[note_index]
+        self.visual[self.height][col] = note and (12 - (note % 12) + 2) or 0
       end
 
     else

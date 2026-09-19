@@ -45,6 +45,11 @@ local GArc = {}
 
 local LEDS_PER_RING = 64
 local DISCRETE_MAX_OPTIONS = 16 -- above this, fall back to continuous fill
+-- budget for a 128px-wide norns line. raised from an initial 22 after that
+-- cut scale names down to nothing useful -- this is still an estimate (no
+-- exact on-device character-width measurement), so say if it's still too
+-- tight for some values or has started overflowing again for others.
+local FOOTER_MAX_CHARS = 30
 
 local function clamp01(n) return util.clamp(n, 0, 1) end
 
@@ -193,14 +198,25 @@ end
 
 -- caller draws this wherever it fits their own screen layout -- avoiding
 -- collisions with other on-screen text is layout-specific, so it stays
--- their job, not this module's
+-- their job, not this module's. page name, ring label, and the [ALL]
+-- broadcast tag (if present) all come first and are never trimmed --
+-- truncation only ever eats into the formatted value at the end, since
+-- that's the part most likely to be long (a param's formatter was written
+-- for the roomier PARAMS menu, not this line) and least essential to keep
+-- in full once it's already legible on the arc's own ring.
 function GArc:footer_text()
   if self.a == nil or not self.a.device then return nil end
   local page = self.pages[self.page]
   local ring = page.rings[self.last_ring]
   if not ring then return nil end
   local tag = self:_broadcasting(ring) and "[ALL] " or ""
-  return tag .. page.name .. " " .. ring.label .. ": " .. params:string(self:_ring_id(ring))
+  local text = tag .. page.name .. " " .. ring.label .. ": " .. params:string(self:_ring_id(ring))
+  if #text > FOOTER_MAX_CHARS then
+    -- plain "..." rather than a single ellipsis glyph -- guaranteed to
+    -- exist in any font, not dependent on the active font having U+2026
+    text = text:sub(1, FOOTER_MAX_CHARS - 3) .. "..."
+  end
+  return text
 end
 
 return GArc

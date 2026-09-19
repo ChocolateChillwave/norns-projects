@@ -8,6 +8,12 @@ local Sequence = {}
 local SUSTAIN_CHANCE = 0.3
 local SUSTAIN_MAX_STEPS = 3
 
+-- when link_track is set: how often evolve's replacement note favors a
+-- pitch already present in the linked track over a fully independent random
+-- pick, and how much randomize's per-note density improves for those pitches
+local LINK_EVOLVE_CHANCE = 0.7
+local LINK_RANDOMIZE_BIAS = 0.25
+
 function Sequence:new(args)
   local m = setmetatable({}, {__index=Sequence})
   local args = args == nil and {} or args
@@ -177,13 +183,22 @@ function Sequence:init()
           self:clear()
           local density = math.random(90, 95) / 100
           local note_lo, note_hi = self:get_param("note_lo"), self:get_param("note_hi")
+          -- linked (opt-in, off by default): pitches the linked track is
+          -- already using get a lower (easier-to-hit) density threshold, so
+          -- the result leans toward "harmonizing" with it rather than every
+          -- pitch in range being equally likely
+          local linked = self:linked_note_set()
           for j = note_lo, note_hi do
+            local j_density = density
+            if linked and linked[j] then
+              j_density = math.max(0.3, density - LINK_RANDOMIZE_BIAS)
+            end
             -- a while-loop (not a plain for) so a step consumed by a
             -- sustained run's tail isn't immediately re-rolled as its own
             -- attack right after
             local i = 1
             while i <= self.sequence_max do
-              if math.random() > density then
+              if math.random() > j_density then
                 self.matrix[i][j] = 1
                 local run = 0
                 if math.random() < SUSTAIN_CHANCE then run = math.random(1, SUSTAIN_MAX_STEPS) end
@@ -213,6 +228,18 @@ function Sequence:init()
       default=0,
       formatter=function(param)
         return param:get() == 0 and "no" or "yes"
+      end
+    }, {
+      id="link_track",
+      name="link generation to",
+      min=0,
+      max=4,
+      exp=false,
+      div=1,
+      default=0,
+      formatter=function(param)
+        local v = param:get()
+        return v == 0 and "off" or ("track " .. v)
       end
     }, {
       id="scale",
@@ -467,6 +494,34 @@ function Sequence:note_off(note_data)
   if device then device:note_off(note, 0, channel) end
 end
 
+-- returns the set of note_index values currently populated anywhere in the
+-- linked track's matrix (whole buffer, not just the active loop -- a wider
+-- "what pitches is that track using" read than just its current step), or
+-- nil if not linked / the linked track has nothing in it. `sequencers` is
+-- the global table polyphasic.lua builds all 4 tracks into -- read directly
+-- rather than threading a lookup through the constructor, the same way
+-- params/midi/clock are already used as ambient globals throughout this file.
+-- randomize/evolve use this to bias generation toward "harmonizing" with
+-- another track instead of picking uniformly at random -- opt-in via
+-- link_track, off (nil) by default so it never changes existing behavior
+-- unless asked for.
+function Sequence:linked_note_set()
+  local link = self:get_param("link_track")
+  if link == 0 then return nil end
+  local other = sequencers and sequencers[link]
+  if other == nil or other == self then return nil end
+  local set = nil
+  for i = 1, other.sequence_max do
+    for j = 1, other.note_max do
+      if other.matrix[i][j] > 0 then
+        set = set or {}
+        set[j] = true
+      end
+    end
+  end
+  return set
+end
+
 function Sequence:update(division, beat)
   if division ~= self.divisions[self:get_param("division")] then do return end end
   -- if generating then remove a random note and replace with a new note.
@@ -486,7 +541,22 @@ function Sequence:update(division, beat)
       local random_step = steps[math.random(1, #steps)]
       self:clear_note(random_step[1], random_step[2])
       local random_i = math.random(1, limit)
-      local random_j = math.random(note_lo, note_hi)
+
+      -- linked (opt-in, off by default): favor a pitch the linked track is
+      -- already using over a fully independent pick, when one's in range
+      local random_j = nil
+      local linked = self:linked_note_set()
+      if linked and math.random() < LINK_EVOLVE_CHANCE then
+        local candidates = {}
+        for note_index in pairs(linked) do
+          if note_index >= note_lo and note_index <= note_hi then
+            table.insert(candidates, note_index)
+          end
+        end
+        if #candidates > 0 then random_j = candidates[math.random(1, #candidates)] end
+      end
+      random_j = random_j or math.random(note_lo, note_hi)
+
       self.matrix[random_i][random_j] = 1
       if math.random() < SUSTAIN_CHANCE then
         local run = math.random(1, SUSTAIN_MAX_STEPS)
@@ -583,9 +653,10 @@ function Sequence:update(division, beat)
   end
 end
 
--- velocity is drawn from self.get_velocity() (injected at construction —
--- shared global lo/hi range in the main script). self.on_note(note_index,
--- velocity), also injected, drives the orb display.
+-- velocity is drawn from self.get_velocity(self) (injected at construction
+-- -- shared global lo/hi range + curve shape in the main script; called
+-- with self so a curve can read this track's own current step/limit).
+-- self.on_note(note_index, velocity), also injected, drives the orb display.
 function Sequence:note_on(note_index)
   if self:get_param("mute") == 1 then do return end end
   if self:get_param("probability") < math.random() then do return end end
@@ -594,7 +665,7 @@ function Sequence:note_on(note_index)
   -- MIDI 127 -- see note_max's comment in init()), so a high note_lo/note_hi
   -- or note_offset can point past its real end
   if note == nil then do return end end
-  local velocity = self.get_velocity and self.get_velocity() or 100
+  local velocity = self.get_velocity and self.get_velocity(self) or 100
   if self.midi_out_device then
     local channel = self:get_param("midi_out_channel")
     table.insert(self.notes_on, {note, note_index, self.midi_out_device, channel})
