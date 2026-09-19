@@ -350,6 +350,30 @@ end)
 ok(#S.arc_leds > 0, "the arc lit some leds (" .. #S.arc_leds .. ")")
 try("redraw with an arc footer", redraw)
 
+section("arc follows values changed outside it")
+try("a value moved from the PARAMS menu reaches the rings", function()
+  local garc_ = S.upvalue(redraw, "garc_")
+  local redraw_id = S.upvalue(cleanup, "redraw_id")
+  -- pin the MORPH page, where ring 3 is the global launch_quant, so this
+  -- doesn't depend on where the page-cycling test above happened to stop
+  while garc_.page ~= 2 do a.key(1, 1) end
+  local p = params:lookup_param("launch_quant")
+  local cs = p.controlspec
+  local before = p.value
+
+  S.advance(redraw_id, 1)
+  S.arc_leds = {}
+  S.advance(redraw_id, 3)
+  ok(#S.arc_leds == 0, "a still arc lights nothing frame to frame (poll only redraws on a change)")
+
+  params:set("launch_quant", before == cs.maxval and cs.minval or before + cs.step)
+  S.advance(redraw_id, 1)
+  ok(#S.arc_leds > 0, "the rings redrew after a value moved without the arc being touched")
+
+  params:set("launch_quant", before)
+  S.advance(redraw_id, 1)
+end)
+
 ---------------------------------------------------------------- psets
 section("pset round trip")
 -- edit something distinctive, save, change it, load, check it came back

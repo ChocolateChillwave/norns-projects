@@ -925,6 +925,9 @@ function init()
   redraw_id = clock.run(function()
     while true do
       clock.sleep(1 / FPS)
+      -- rings follow values that moved without the arc (PARAMS menu, pset
+      -- load, an encoder); cheap, redraws only when something changed
+      if garc_ then garc_:poll() end
       if playing then screen_dirty = true end -- the playheads are moving
       if screen_dirty then
         redraw()

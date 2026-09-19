@@ -116,6 +116,17 @@ built around making it playable.
   covers the pure-Lua engine; `test_script.lua` drives the whole script
   against `norns_stub.lua`, a stand-in runtime with steppable clock
   coroutines. norns ignores the folder.
+- **`lib/garc.lua` is the shared arc module, kept in step with the other
+  scripts' copies.** It started as an older copy without `poll()` or the
+  per-ring `style`/`track` options and was brought up to date (2026-09-19)
+  so the repo-wide advice in `CLAUDE.md` holds here too. The redraw loop
+  now calls `garc_:poll()` every frame, so a lane/quant/lane-select value
+  that moves from the PARAMS menu, a pset load or an encoder shows on the
+  rings without touching them. No ring here sets `style`, so the arc looks
+  exactly as it did; the options are available if a page ever gets a signed
+  or position-style value that a plain fill would misrepresent.
+  `test_script.lua`'s "arc follows values changed outside it" covers the
+  wiring — remove the `poll()` call and it fails.
 
 ## Open items / unverified
 
