@@ -109,13 +109,14 @@ built around making it playable.
   steps, row 7 pages through longer patterns. Pressing a step cycles rest →
   normal → accent → ghost, which reaches every velocity level the library
   itself is written in without a separate velocity mode.
-- **Tests live in the repo** (`segue/test/`), which no other script here
-  does. This one has enough state — 8 playheads, a follow engine, transition
-  blending, a capture buffer — that the round trip of "guess, copy to the
-  norns, listen, guess again" is too slow to be the only check. `test_segue.lua`
-  covers the pure-Lua engine; `test_script.lua` drives the whole script
-  against `norns_stub.lua`, a stand-in runtime with steppable clock
-  coroutines. norns ignores the folder.
+- **Tests live in the repo** (`segue/test/`). This was the first script here
+  to have them; cascade, rytmpatch and summitpatch have since followed, all
+  from copies of this stub. This one has enough state — 8 playheads, a
+  follow engine, transition blending, a capture buffer — that the round trip
+  of "guess, copy to the norns, listen, guess again" is too slow to be the
+  only check. `test_segue.lua` covers the pure-Lua engine; `test_script.lua`
+  drives the whole script against `norns_stub.lua`, a stand-in runtime with
+  steppable clock coroutines. norns ignores the folder.
 - **`lib/garc.lua` is the shared arc module, kept in step with the other
   scripts' copies.** It started as an older copy without `poll()` or the
   per-ring `style`/`track` options and was brought up to date (2026-09-19)

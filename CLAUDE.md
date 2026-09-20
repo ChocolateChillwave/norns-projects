@@ -68,6 +68,8 @@ This repo holds multiple standalone norns scripts, each in its own subfolder:
 norns-projects/
 ├── CLAUDE.md          <- this file: shared coding conventions, applies to all scripts below
 ├── README.md          <- index of the scripts (with links to their docs) + git command reference
+├── ROADMAP.md         <- cross-script tracker: status, next moves, what needs hardware
+├── run-tests.lua      <- runs every script's test/ suite; exits non-zero on failure
 ├── cascade/           <- strummed-chord instrument:        lib/, test/, MANUAL.md, NOTES.md
 ├── polyphasic/        <- 4-track polymetric sequencer:     lib/, NOTES.md
 ├── rytmpatch/         <- Analog Rytm MKII patch editor:    lib/, test/, NOTES.md
@@ -75,6 +77,6 @@ norns-projects/
 ├── summitpatch/       <- Summit/Peak patch randomizer:     lib/, test/, NOTES.md
 └── (future scripts follow the same pattern)
 
-Every script has a `<script>.lua` entry point next to its `lib/`. `test/` dirs are desktop Lua suites (see Off-device testing above); norns ignores them. `NOTES.md` is the per-script status/decisions/open-questions file; `MANUAL.md` is a user manual, and only cascade and segue have one so far.
+Every script has a `<script>.lua` entry point next to its `lib/`. `test/` dirs are desktop Lua suites (see Off-device testing above); norns ignores them. `NOTES.md` is the per-script status/decisions/open-questions file; `MANUAL.md` is a user manual, and only cascade and segue have one so far. `ROADMAP.md` at the root is the layer above those: cross-script status and ordering, plus the items that belong to no single script (diverged stubs, shared-copy sync, integrations). It deliberately holds no detail of its own — it links into the NOTES files, so the per-script convention above is unchanged. Update it when a script's status changes (first hardware pass, a suite added, a planned item shipped).
 
 Each script folder is independent — mirrors its counterpart in dust/code/<name> on the norns device. Coding conventions, API notes, and best practices in this file apply to all of them. Project-specific decisions, current status, and open questions belong in each script's own NOTES.md, not here — keeps this file stable while individual scripts evolve.

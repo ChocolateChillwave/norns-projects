@@ -297,6 +297,26 @@
   `randomize`'s default spread is now wider (full range) than before (was always
   centered). Narrow the range per-track if you want the old centered-ish feel back.
 
+## Added (2026-09-19)
+- **`lib/garc.lua` gained `poll()` and per-ring rendering styles**, and
+  `redraw()`'s loop now calls `garc_:poll()` every frame. polyphasic is the
+  script garc was written in, so this is the source copy — cascade's and
+  segue's are the same file with a one-line header comment. Before this, a
+  value moved from the PARAMETERS menu, a pset load, an encoder or the
+  script's own evolve/randomize left the rings showing whatever they last
+  drew until you touched them; generative changes are exactly the case that
+  matters here. `poll()` compares four values a frame and only redraws on a
+  change, so a still arc costs the comparison and nothing else.
+- The new `style` options (`bipolar`, `comet`, `dot`, and a `track`
+  underlay) are available but **no polyphasic ring sets one yet**, so the
+  arc looks exactly as it did. Worth a pass when the arc pages get
+  reorganized (see Open items): the RANGE page's signed values are the
+  obvious candidates for `bipolar`, which draws outward from centre instead
+  of showing "slightly negative" as a nearly-full ring.
+- Untested on hardware — the change landed after the last norns session.
+  cascade has 31 checks covering this module (`cascade/test/test_arc.lua`)
+  and polyphasic has no suite of its own to run them from yet.
+
 ## Fixed
 - Grid LED crash when manually entering notes with evolve + chained link_track
   on (2026-09-15, traceback: `ggrid.lua:178: attempt to perform arithmetic on

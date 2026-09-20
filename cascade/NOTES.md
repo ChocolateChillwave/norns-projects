@@ -9,10 +9,11 @@ strumming is the point of the whole script — everything else serves that.
 
 Renamed from `chordflow` 2026-09-16 (`git mv`, history kept).
 
-**Status:** first hardware pass done 2026-09-16 ("working fairly well"); this
-file's 2026-09-16 round 2 changes respond to that pass and are untested on
-hardware. Chord, pattern and strum engines are covered by off-device tests
-(see Verification).
+**Status:** first hardware pass done 2026-09-16 ("working fairly well").
+Everything since — round 2, the engine and triads/latch/bass-split batches,
+the string view, the playability pass and the crow/Just Friends output — is
+untested on hardware. Chord, pattern, strum, output and arc code are covered
+by off-device tests (see Verification).
 
 `MANUAL.md` is the user-facing manual (what everything does, parameter
 reference, recipes, version history). This file is the developer's log — why
@@ -362,24 +363,26 @@ clean.
   drop `SAMPLES` to 12 or fewer before reaching for anything cleverer.
 - **`cascade/img/` is gone** -- 24 petal PNGs left over from the original
   flower visual, unused since the rewrite. Recoverable from git history at
-  `chordflow/img/` if ever wanted. `polyphasic/img/rainy_city...png` is still
-  there and still unused by its script; left alone because polyphasic's own
-  NOTES deliberately keeps it in case "Vanishing" is revisited.
+  `chordflow/img/` if ever wanted. `polyphasic/img/` went in the same tidy-up
+  and is recoverable from commit 5e20ca0 — polyphasic's own NOTES has the
+  restore command, in case "Vanishing" is ever revisited. The repo now ships
+  no images at all.
 - **Needs a hardware pass** for round 2: does the merged strum read clearly
   with 2-3 chords held; is 300ms the right default release; is "strum now"
   the right default for new chords; do morph/every feel musical at real
   tempos; is humanize now in a useful range (worry is it's too subtle at the
   low end rather than too strong).
-- **Chosen but not yet built**, in the agreed order: latch (in params), bass
-  split, voice leading; then string view; then the crow/Just Friends output
-  backend; then the arc plectrum and a shared slow-modulation lib. Design
-  notes for each are in the session this batch came from.
-- **crow/JF**: hardware is wired and norns needs nothing installed — crow is
-  detected over USB. Relevant calls are `crow.ii.jf.mode(1)`,
-  `crow.ii.jf.play_voice(channel 1-6, volts, level)`, and
-  `crow.ii.jf.trigger(channel, state)` for gates. JF's 6 voices map naturally
-  to 6 strings. Open question: plucks (JF's own envelope, so note length is
-  JF's business) vs gates (cascade controls length).
+- **Still to build from the agreed list**: the arc plectrum (strumming by
+  hand from a ring) and a shared slow-modulation lib. Everything ahead of
+  them shipped — latch, bass split and voice leading in v0.6.0, the string
+  view in v0.7.0, the crow/Just Friends backend in v0.9.0. Design notes for
+  the two remaining are in the session that batch came from.
+- **crow/JF is built** (v0.9.0, `lib/output.lua`) and the pluck-vs-gate
+  question is settled as a `jf note` param offering both. What is left is a
+  hardware pass on it: the two guesses in the Crow / Just Friends section
+  above (level 0 as sustain's note-off, and 1-10V as the level range), plus
+  crow's own CV outputs for the bass split, which waits on JF being
+  confirmed working.
 - **Two chords pressed at almost the same instant** give a short strum of the
   first one before the merged strum starts (the second press arrives mid-pass
   and kicks the next pass). Probably inaudible at normal strum rates; flagging
@@ -395,8 +398,9 @@ clean.
 
 No norns in this dev environment, so testing is off-device against stubbed
 norns APIs with the local `lua.exe`. The suites live in `cascade/test/` and
-run with `lua test_libs.lua`, `lua test_strum.lua`, `lua test_script.lua`
-from that folder (159 checks total).
+run with `lua test_libs.lua`, `lua test_strum.lua`, `lua test_script.lua`,
+`lua test_output.lua`, `lua test_arc.lua` from that folder (238 checks
+total, all passing as of 2026-09-19).
 
 `test/norns_stub.lua` started as a copy of `segue/test/norns_stub.lua` per
 CLAUDE.md and was extended for cascade:
@@ -416,7 +420,7 @@ CLAUDE.md and was extended for cascade:
 Worth folding the generic parts of that back into segue's copy if it's ever
 touched again -- the param and midi gaps aren't cascade-specific.
 
-- **`test_script.lua`**, 90 checks, drives cascade.lua itself: init, every
+- **`test_script.lua`**, 108 checks, drives cascade.lua itself: init, every
   param group's promised count, arc-bound params having controlspecs, the
   grid surface (including that C major shows no accidentals and A major
   shows three), latch, keys and encoders, K2+E2 paging without panicking,

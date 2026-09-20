@@ -404,7 +404,9 @@ stalled the script.
 
 ## 14. Planned
 
-Crow and Just Friends output, using its six voices as six strings; an arc
-"plectrum" mode for strumming by hand; and slow modulation of any parameter.
+An arc "plectrum" mode for strumming by hand, and slow modulation of any
+parameter.
 
 The right half of the grid is reserved for a sequencer.
+
+Crow and Just Friends output shipped in v0.9.0 and is no longer planned.
