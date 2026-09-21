@@ -9,7 +9,7 @@ stays the source of truth (see `CLAUDE.md`). What's here is the layer above:
 status, ordering, and the things that belong to no single script. Each entry
 links to the `NOTES.md` section with the reasoning.
 
-Last reconciled against the code: **2026-09-19**.
+Last reconciled against the code: **2026-09-20**.
 
 ## Status
 
@@ -17,11 +17,11 @@ Last reconciled against the code: **2026-09-19**.
 |---|---|---|---|---|
 | [cascade](cascade/NOTES.md) | partly — 2026-09-16, "working fairly well" | 238 | yes | Six batches have landed since that pass, including the whole crow/JF backend. Most-developed script here, and the one whose tested-vs-shipped gap is widest. |
 | [polyphasic](polyphasic/NOTES.md) | yes — 2026-09-15 | **none** | no | Works and has been played. The arc changes of 2026-09-19 are untested and it has no suite to catch regressions. |
-| [segue](segue/NOTES.md) | no | 850 | yes | Heavily desk-tested, never made a sound. One real bug already surfaced the moment a Rytm was attached. |
+| [segue](segue/NOTES.md) | partly — 2026-09-20, playing |  971 | yes | Being played. MIDI confirmed, library rebuilt around kits, encoder response fixed, PPQN raised to 96 for finer swing. Nothing about the *switch* itself has been judged yet, and CPU is unmeasured at the new clock rate. |
 | [rytmpatch](rytmpatch/NOTES.md) | no | 1283 | no | Complete but unproven, and its MIDI channel defaults are known-suspect. |
 | [summitpatch](summitpatch/NOTES.md) | no | 541 | no | Complete but unproven; a whole page (STRUCT) rests on unverified NRPN ranges. |
 
-2,912 checks total, all passing — `lua run-tests.lua` from the repo root.
+3,060 checks total, all passing — `lua run-tests.lua` from the repo root.
 
 **The headline:** three of five scripts have never run on the device, and
 the two that have are both now ahead of their last hardware pass. Test
@@ -42,11 +42,14 @@ One thing each, in the order I'd do them:
    CHANNELS once and both scripts get correct defaults. Also settles whether
    segue's "notes 0-11" layout is a deliberate config. → *rytmpatch Open
    items; segue Open items.*
-2. **segue — first hardware pass.** Most built-out untested script, and the
-   one thing it's for (legato hand-off landing mid-bar and sounding
-   continuous) is unprovable at a desk. Watch CPU while you're there: the
-   24 PPQN master clock ticking eight lanes is the busiest thing in the
-   repo and has never been measured on a Pi. → *segue Open items.*
+2. **segue — hear the transitions.** MIDI is confirmed and the library is
+   rebuilt, so the one thing the script exists for is now the only thing
+   blocking it: does a legato hand-off landing mid-bar actually sound
+   continuous? Unprovable at a desk. It ships in `focus` mode with the
+   performance layer hidden precisely so this is what you judge. Watch CPU
+   while you're there — the 96 PPQN master clock ticking eight lanes is the
+   busiest thing in the repo and has never been measured on a Pi.
+   → *segue Plan, phase 1.*
 3. **cascade — hardware pass on crow/JF and on round 2.** Two cheap-to-change
    guesses are waiting on your ears: level 0 as sustain's note-off, and
    1-10V as the level range. Same session covers the round-2 playability
@@ -72,7 +75,8 @@ DEPTH, SAMPLE START/END, FILTER FREQ's floor of 45); screen layout in 62px
 cells.
 
 **segue** — do the transitions sound like transitions; screen layout; grid
-brightness choices; CPU at 24 PPQN; Ableton Link.
+brightness choices; CPU at 96 PPQN (raised 2026-09-20, 4x the wakeups);
+Ableton Link; whether finer swing actually improves the breaks.
 
 **cascade** — crow/JF's two guesses; does a merged strum read clearly with
 2-3 chords held; is 300ms the right default release; do morph/every feel
@@ -86,6 +90,10 @@ labels (77 / 78 / 76); fine-detune and cutoff windows; whether `perc` and
 
 **polyphasic** — the 2026-09-19 arc work (`poll()` and the new styles) has
 never been seen on a real arc.
+
+**Any script** — open segue's SELECT preview and see whether its ~36-character
+header lines fit the screen. The preview doesn't wrap, and CONVENTIONS §2
+sets the house width on that number without it having been measured.
 
 ## Cross-cutting
 
@@ -114,12 +122,24 @@ never been seen on a real arc.
   around: `vel_curve` and `link_track` were left off the arc deliberately,
   and the new `bipolar` style suits the RANGE page's signed values.
 
+- **Conventions drift found 2026-09-21** (see `CONVENTIONS.md`):
+  polyphasic loads its modules as globals (`Sequence`, `GridLib`, `Display`,
+  `GArc`, `lattice`), and polyphasic's and rytmpatch's header lines run to
+  ~70 characters, past the SELECT preview's edge. Neither is a bug. Fix
+  them the next time each script is open for other work, not as a
+  standalone pass.
+- **cascade's planned "shared slow-modulation lib" should use norns' own
+  `lib/lfo`**, which already covers clocked/free LFOs, six shapes, depth,
+  phase and `add_params()`. That makes the plan a call-site change instead
+  of a lib. Update cascade's NOTES when that work starts.
+
 ## Ideas, not commitments
 
-Parked in the NOTES files, listed here so they're findable: cascade's arc
-plectrum, shared slow-modulation lib, and grid-right-half sequencer;
-polyphasic's per-track progression banks and the shelved "Vanishing"
-visual; segue's per-pattern transition override, labelled scenes, per-lane
+Candidate *new* scripts and shared infrastructure are brainstormed in
+[IDEAS.md](IDEAS.md), with a recommended order. Below are feature ideas for
+existing scripts, parked in their NOTES files: cascade's arc plectrum,
+shared slow-modulation lib, and grid-right-half sequencer; polyphasic's
+per-track progression banks and the shelved "Vanishing" visual; segue's per-pattern transition override, labelled scenes, per-lane
 beat repeat, and non-16 pattern lengths; summitpatch's patch scenes with
 an E3 crossfade, "breed", and a MOD MX page; rytmpatch's unmapped trig /
 euclidean / performance-macro CCs, and arc support for both patch editors.
