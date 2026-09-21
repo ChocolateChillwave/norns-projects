@@ -32,7 +32,12 @@
 -- (solid block, never touched).
 -- PARAMETERS > RANDOMIZE >
 -- "widen range" opens every
--- window at once.
+-- window at once, and
+-- "outliers" (10%) is how often
+-- a param ignores its window
+-- and lands outside it -- the
+-- extremes stay reachable, just
+-- rare.
 --
 -- Rytm setup: MIDI CONFIG >
 -- CHANNELS: tracks on 1-12
@@ -152,6 +157,12 @@ local function send(slot, v)
   if not out_dev then return end
   local ch = slot.fx and params:get("fx_ch") or track_channel(slot.track)
   out_dev:cc(slot.desc.cc, v, ch)
+  -- diagnostic: with a DAW or a plugin in the chain it's worth seeing
+  -- exactly what left norns, since anything in between can re-channelize
+  -- or swallow CCs
+  if params:get("log") == 2 then
+    print(string.format("rytmpatch -> ch %2d  cc %3d = %3d  (%s)", ch, slot.desc.cc, v, slot.desc.name))
+  end
 end
 
 local function audition(t)
@@ -213,6 +224,7 @@ local function rand_opts(scope)
     lo = params:get("rnd_lo") / 100,
     hi = math.max(params:get("rnd_lo"), params:get("rnd_hi")) / 100,
     spread = spread(),
+    tails = params:get("rnd_tails") / 100,
     beats = MORPH_BEATS[params:get("morph")],
     scope = scope,
   }
@@ -264,21 +276,25 @@ end
 local function add_params()
   params:add_separator("rytmpatch_sep", "RYTMPATCH")
 
-  params:add_group("rytmpatch_midi", "MIDI", 6)
+  params:add_group("rytmpatch_midi", "MIDI", 7)
   params:add_option("midi_port", "rytm port", Core.port_names(), 1)
   params:set_action("midi_port", function() connect_midi() end)
   params:add_number("track_ch", "track 1 channel", 1, 16, 1)
   params:add_number("fx_ch", "fx channel", 1, 16, 13)
   params:add_option("sync_in", "mirror rytm knobs", {"off", "on"}, 2)
+  params:add_option("log", "log sends to maiden", {"off", "on"}, 1)
   params:add_option("send_on_load", "send on pset load", {"off", "on"}, 2)
   params:add_trigger("send_all", "send all to rytm")
   params:set_action("send_all", function() send_all(); View.flash("SENT ALL") end)
 
-  params:add_group("rytmpatch_random", "RANDOMIZE", 10)
+  params:add_group("rytmpatch_random", "RANDOMIZE", 11)
   params:add_number("rnd_amount", "random amount", 0, 100, 100, function(p) return p:get() .. "%" end)
   -- 0% = each param's tame window (see lib/rytm_map.lua), 100% = its full
   -- CC range, i.e. the old free-for-all
   params:add_number("rnd_spread", "widen range", 0, 100, 0, function(p) return p:get() .. "%" end)
+  -- chance per param of ignoring the window and landing outside it, so
+  -- the extremes stay reachable by the dice without becoming the norm
+  params:add_number("rnd_tails", "outliers", 0, 100, 10, function(p) return p:get() .. "%" end)
   params:add_number("rnd_lo", "range low", 0, 100, 0, function(p) return p:get() .. "%" end)
   params:add_number("rnd_hi", "range high", 0, 100, 100, function(p) return p:get() .. "%" end)
   params:add_option("morph", "morph time (beats)", MORPH_NAMES, 1)

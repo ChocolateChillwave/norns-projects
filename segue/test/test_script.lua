@@ -30,6 +30,11 @@ ok(rawget(_G, "engine") == nil, "no engine is set (MIDI-out only)")
 
 try("init() runs clean", init)
 
+local Lane = S.upvalue(redraw, "Lane")
+ok(Lane ~= nil, "the Lane module is reachable for its timing constants")
+local BAR = Lane.TICKS_PER_BAR      -- ticks in one bar
+local QUARTER = BAR / 4             -- ticks in one beat
+
 ok(params.by_id["lane_1_div"] ~= nil, "per-lane params exist")
 ok(params.by_id["voice_12_note"] ~= nil, "voice routing params exist")
 ok(params.by_id["launch_quant"] ~= nil, "launch quant param exists")
@@ -54,6 +59,55 @@ end
 for _, p in ipairs(params.list) do
   local okf, err = pcall(function() return p:string() end)
   ok(okf, "formatter for " .. p.id .. " -> " .. tostring(err))
+end
+
+---------------------------------------------------------------- encoder feel
+section("encoder response")
+-- norns' Control:delta moves the raw 0-1 value by d/100 and ignores the
+-- step, so a discrete control takes many clicks to move one step -- 50 to
+-- toggle a two-option one. every control here is meant to override that.
+-- (an earlier version of the stub moved by one step itself, which was
+-- kinder than the hardware and hid this from the whole suite.)
+local sluggish = {}
+for _, p in ipairs(params.list) do
+  local cs = p.controlspec
+  if cs and cs.step and cs.step > 0 then
+    local steps = (cs.maxval - cs.minval) / cs.step
+    local restore = params:get(p.id)
+    -- park at the bottom: a 0-1 step-1 control has nowhere above its
+    -- midpoint to go, and half this script's controls are that shape
+    params:set(p.id, cs.minval)
+    params:delta(p.id, 1)
+    local moved = params:get(p.id) - cs.minval
+    -- wide controls keep norns' default; note `x and nil or y` cannot
+    -- express that, since nil is falsy and the `or` branch always wins
+    local want = cs.step
+    if steps > 100 then want = nil end
+    if want and math.abs(moved - want) > 1e-9 then
+      sluggish[#sluggish + 1] = p.id .. " moved " .. moved ..
+                                " (want " .. want .. ")"
+    end
+    params:delta(p.id, -1)
+    if want and math.abs(params:get(p.id) - cs.minval) > 1e-9 then
+      sluggish[#sluggish + 1] = p.id .. " did not come back down"
+    end
+    params:set(p.id, restore)
+  end
+end
+ok(#sluggish == 0, "one encoder click moves one step on every control" ..
+   (#sluggish > 0 and (" -- " .. table.concat(sluggish, "; ")) or ""))
+
+-- spot-check the worst offenders by name, so a regression names itself
+for _, id in ipairs({"mode", "transition", "lane_1_mute", "lane_1_swing",
+                     "lane_1_div", "launch_quant"}) do
+  local cs = params.by_id[id].controlspec
+  local restore = params:get(id)
+  params:set(id, cs.minval)
+  params:delta(id, 1)
+  ok(math.abs(params:get(id) - (cs.minval + cs.step)) < 1e-9,
+     id .. ": one click moves one step (got " .. params:get(id) ..
+     ", want " .. (cs.minval + cs.step) .. ")")
+  params:set(id, restore)
 end
 
 ---------------------------------------------------------------- redraw
@@ -88,7 +142,7 @@ local clock_id = transport()
 ok(clock_id ~= nil, "a transport clock coroutine is running")
 
 S.midi_sent = {}
-try("96 ticks (one bar) of transport", function() S.advance(clock_id, 96) end)
+try("one bar of transport", function() S.advance(clock_id, BAR) end)
 local notes = 0
 for _, m in ipairs(S.midi_sent) do if m.t == "on" then notes = notes + 1 end end
 S.real_print("  " .. notes .. " notes in the first bar")
@@ -143,13 +197,80 @@ ok(params:get("voice_1_chan") == 1 and params:get("voice_1_note") == 0,
 params:set("voice_3_note", 99)
 ok(params:get("voice_3_note") == 99, "a per-voice note can be hand-edited")
 S.midi_sent = {}
-try("a bar with a hand-edited voice", function() S.advance(clock_id, 96) end)
+try("a bar with a hand-edited voice", function() S.advance(clock_id, BAR) end)
 params:set("note_layout", 1) -- restamping clears it, by design
 ok(params:get("voice_3_note") == 2, "choosing a layout again overwrites it")
 
 try("redraw while playing", redraw)
 
-try("seven more bars", function() S.advance(clock_id, 96 * 7) end)
+try("seven more bars", function() S.advance(clock_id, BAR * 7) end)
+
+---------------------------------------------------------------- clock sync
+section("clock alignment")
+-- the grid used to be measured from the moment you pressed play, so under
+-- Link the script ran at the right tempo at an arbitrary phase and landing
+-- on the beat was down to when you hit the key. it comes from
+-- clock.get_beats() now, so the same musical position always gives the
+-- same step.
+local SL = S.get_lanes()
+
+-- stop, move the shared clock to `beats`, start, and report where lane 1's
+-- playhead landed on its very first step
+local function start_at(beats, source)
+  if S.upvalue(redraw, "playing") then key(3, 1) key(3, 0) end
+  params:set("clock_source", source)
+  S.beats = beats
+  key(3, 1) key(3, 0)
+  local id = transport()
+  for _ = 1, 64 do
+    S.advance(id, 1)
+    if SL[1].started then break end
+  end
+  return SL[1].pos
+end
+
+-- lane 1 plays the amen: 32 steps of 1/16, so the pattern is exactly two
+-- bars long. two positions eight beats apart are the same place in it.
+ok(start_at(4.0, 3) == start_at(12.0, 3),
+   "shared clock: two bars apart gives the same step")
+ok(start_at(4.0, 3) ~= start_at(5.0, 3),
+   "shared clock: one beat apart gives a different step")
+-- and the step it lands on is the phase-correct one for the tick it fired
+-- on, not merely a repeatable one. (starting exactly at beat 0 lands on
+-- step 2, not step 1: clock.sync waits for the next subdivision, so the
+-- boundary at tick 0 is already in the past. that is right -- the first
+-- 16th after the downbeat *is* step 2.)
+local dtv = Lane.DIV_TICKS[math.floor(params:get("lane_1_div"))]
+for _, b in ipairs({0.0, 4.0, 13.75, 37.25}) do
+  local pos = start_at(b, 3)
+  local len = SL[1].bank[SL[1].active].length
+  local k = math.floor(math.floor(S.beats * Lane.PPQN + 0.5) / dtv)
+  ok(pos == (k % len) + 1,
+     "shared clock at beat " .. b .. ": phase-correct step (want " ..
+     ((k % len) + 1) .. ", got " .. pos .. ")")
+end
+
+-- on the internal clock there is nobody to agree with, so pressing play
+-- begins the phrase where you pressed it
+ok(start_at(4.0, 1) == 1, "internal clock: starts at step 1")
+ok(start_at(37.25, 1) == 1, "internal clock: still step 1 from anywhere")
+
+-- and the transport keeps running cleanly from a non-zero origin
+params:set("clock_source", 3)
+S.beats = 101.5
+if S.upvalue(redraw, "playing") then key(3, 1) key(3, 0) end
+key(3, 1) key(3, 0)
+S.midi_sent = {}
+try("a bar from a mid-bar shared-clock start", function()
+  S.advance(transport(), BAR)
+end)
+local late_notes = 0
+for _, m in ipairs(S.midi_sent) do
+  if m.t == "on" then late_notes = late_notes + 1 end
+end
+ok(late_notes > 10, "a late join still plays a full bar (" ..
+   late_notes .. " notes)")
+params:set("clock_source", 1)
 
 ---------------------------------------------------------------- grid
 section("grid")
@@ -181,7 +302,7 @@ try("pressing every FX cell", function()
   for x = 9, 16 do
     for y = 1, 8 do
       S.grid_key(1, x, y, 1)
-      S.advance(transport(), 3)
+      S.advance(transport(), 12)
       S.grid_key(1, x, y, 0)
     end
   end
@@ -207,13 +328,46 @@ local function notes_on()
   return out
 end
 
+-- FOCUS mode (the default) dims the performance rows, so prove that first
+-- and then switch to FULL for the beat-repeat check below
+params:set("mode", 1)
+-- init() closes over fx_level to hand it to GridUI, so that is where it can
+-- be reached from (redraw() never mentions it)
+local GridUI_L = S.upvalue(init, "fx_level")
+ok(type(GridUI_L) == "function", "the fx level function is reachable")
+if GridUI_L then
+  local dark = true
+  for _, row in ipairs({1, 4, 6}) do
+    for c = 1, 8 do if GridUI_L(c, row) ~= 0 then dark = false end end
+  end
+  ok(dark, "focus mode leaves rows 1, 4 and 6 dark")
+  local lit = false
+  for _, row in ipairs({2, 3, 5, 7, 8}) do
+    for c = 1, 8 do if GridUI_L(c, row) > 0 then lit = true end end
+  end
+  ok(lit, "focus mode keeps the rows it does show lit")
+end
+-- a press on a hidden row must do nothing at all
+local rep_before = S.upvalue(redraw, "rep_col")
+S.grid_key(1, 10, 1, 1)
+ok(S.upvalue(redraw, "rep_col") == rep_before,
+   "a press on a hidden row is inert")
+S.grid_key(1, 10, 1, 0)
+
+params:set("mode", 2) -- full
+if GridUI_L then
+  local lit = false
+  for c = 1, 8 do if GridUI_L(c, 1) > 0 then lit = true end end
+  ok(lit, "full mode lights row 1 again")
+end
+
 clock_id = transport()
 S.grid_key(1, 10, 1, 1) -- FX row 1 col 2 = 1/4 repeat (24 ticks)
 S.midi_sent = {}
-try("first repeat window (records)", function() S.advance(clock_id, 24) end)
+try("first repeat window (records)", function() S.advance(clock_id, QUARTER) end)
 local win_a = notes_on()
 S.midi_sent = {}
-try("second repeat window (replays)", function() S.advance(clock_id, 24) end)
+try("second repeat window (replays)", function() S.advance(clock_id, QUARTER) end)
 local win_b = notes_on()
 S.grid_key(1, 10, 1, 0)
 
@@ -227,13 +381,13 @@ end
 ok(same, "the replayed window is note-for-note the captured one")
 
 S.midi_sent = {}
-try("24 ticks after releasing it", function() S.advance(clock_id, 24) end)
+try("a beat after releasing it", function() S.advance(clock_id, QUARTER) end)
 ok(#notes_on() > 0, "the lanes resume playing live after the release (" ..
    #notes_on() .. " notes)")
 
 -- solo, held then released
 S.grid_key(1, 9, 4, 1) -- FX row 4 col 1 = solo lane 1
-try("8 ticks with a lane soloed", function() S.advance(transport(), 8) end)
+try("a few steps with a lane soloed", function() S.advance(transport(), QUARTER) end)
 S.grid_key(1, 9, 4, 0)
 
 ---------------------------------------------------------------- step editor
@@ -276,7 +430,7 @@ try("grid redraw in edit mode", function()
   for _, m in ipairs(S.metros) do if m.event then m.event() end end
 end)
 try("the transport keeps running while editing", function()
-  S.advance(transport(), 24)
+  S.advance(transport(), QUARTER)
 end)
 
 -- clear, then exit
@@ -295,6 +449,171 @@ ok(S.upvalue(redraw, "edit_mode") == false, "row 8 col 1 left the editor")
 S.grid_key(1, 4, 2, 1) S.grid_key(1, 4, 2, 0)
 ok(L[4].queued == 2 or L[4].active == 2,
    "after leaving the editor a press launches again")
+
+---------------------------------------------------------------- edit scope
+section("bulk follow edits")
+local SL = S.get_lanes()
+
+-- drive shift+E3 until the named field is in front of us
+local function goto_field(want)
+  for _ = 1, 20 do key(1, 1) enc(3, -1) key(1, 0) end  -- rewind to the first
+  for _ = 1, 20 do
+    if S.upvalue(redraw, "cur_field")().name == want then return true end
+    key(1, 1) enc(3, 1) key(1, 0)
+  end
+  return false
+end
+
+local function set_scope(want)
+  ok(goto_field("scope"), "reached the scope field")
+  for _ = 1, 6 do enc(3, -1) end          -- back to "pattern"
+  for _ = 1, want - 1 do enc(3, 1) end
+end
+
+local function all_chances()
+  local out = {}
+  for i = 1, 8 do
+    for s = 1, 8 do out[#out + 1] = SL[i].bank[s].follow.chance end
+  end
+  return out
+end
+
+ok(type(S.upvalue(redraw, "cur_field")) == "function",
+   "cur_field is reachable for the scope tests")
+
+-- baseline: every pattern to a known value, one at a time is too slow, so
+-- this is also the first real use of "all"
+params:set("sel_lane", 1)
+sel_slot_reset = nil
+set_scope(4) -- all
+ok(goto_field("chance"), "reached the chance field")
+for _ = 1, 40 do enc(3, -1) end          -- everything to 0%
+local zeroed = true
+for _, c in ipairs(all_chances()) do if c ~= 0 then zeroed = false end end
+ok(zeroed, "scope=all wrote chance to all 64 patterns")
+
+-- pattern scope touches exactly one
+set_scope(1)
+ok(goto_field("chance"), "back on chance")
+enc(3, 1)
+local touched = 0
+for _, c in ipairs(all_chances()) do if c ~= 0 then touched = touched + 1 end end
+ok(touched == 1, "scope=pattern changed exactly one pattern (got " ..
+   touched .. ")")
+
+-- lane scope touches the selected lane's eight and nothing else
+set_scope(4) ok(goto_field("chance")) for _ = 1, 40 do enc(3, -1) end
+params:set("sel_lane", 3)
+set_scope(2) -- lane
+ok(goto_field("chance"), "back on chance for the lane test")
+enc(3, 1)
+local in_lane, out_lane = 0, 0
+for i = 1, 8 do
+  for s = 1, 8 do
+    if SL[i].bank[s].follow.chance ~= 0 then
+      if i == 3 then in_lane = in_lane + 1 else out_lane = out_lane + 1 end
+    end
+  end
+end
+ok(in_lane == 8, "scope=lane wrote all 8 patterns of lane 3 (got " ..
+   in_lane .. ")")
+ok(out_lane == 0, "scope=lane left every other lane alone (got " ..
+   out_lane .. " strays)")
+
+-- kit scope touches one slot across all lanes
+set_scope(4) ok(goto_field("chance")) for _ = 1, 40 do enc(3, -1) end
+set_scope(3) -- kit
+ok(goto_field("chance"), "back on chance for the kit test")
+local slot = S.upvalue(redraw, "sel_slot")
+enc(3, 1)
+local in_kit, out_kit = 0, 0
+for i = 1, 8 do
+  for s = 1, 8 do
+    if SL[i].bank[s].follow.chance ~= 0 then
+      if s == slot then in_kit = in_kit + 1 else out_kit = out_kit + 1 end
+    end
+  end
+end
+ok(in_kit == 8, "scope=kit wrote slot " .. slot .. " on all 8 lanes (got " ..
+   in_kit .. ")")
+ok(out_kit == 0, "scope=kit left the other slots alone (got " ..
+   out_kit .. " strays)")
+
+-- a bulk edit assigns rather than nudging: everything in scope ends equal
+set_scope(1) ok(goto_field("chance"))
+for _ = 1, 3 do enc(3, 1) end            -- make this one differ
+set_scope(2) ok(goto_field("chance"))
+enc(3, 1)
+local first = SL[3].bank[1].follow.chance
+local same = true
+for s = 1, 8 do
+  if SL[3].bank[s].follow.chance ~= first then same = false end
+end
+ok(same, "a bulk edit leaves everything in scope at the same value (" ..
+   first .. "%)")
+
+-- follow time and the two actions scope the same way
+set_scope(4)
+ok(goto_field("action A"), "reached action A")
+enc(3, 1)
+local a = SL[1].bank[1].follow.a
+local a_same = true
+for i = 1, 8 do
+  for s = 1, 8 do if SL[i].bank[s].follow.a ~= a then a_same = false end end
+end
+ok(a_same, "scope=all applies to action A too")
+ok(goto_field("follow"), "reached follow time")
+enc(3, -1)
+local t = SL[1].bank[1].follow.time
+local t_same = true
+for i = 1, 8 do
+  for s = 1, 8 do if SL[i].bank[s].follow.time ~= t then t_same = false end end
+end
+ok(t_same, "scope=all applies to follow time too")
+
+-- a lane setting ignores lane/kit scope and only widens at `all`
+set_scope(2)
+ok(goto_field("division"), "reached division")
+params:set("sel_lane", 5)
+for i = 1, 8 do params:set("lane_" .. i .. "_div", 5) end
+enc(3, 1)
+ok(params:get("lane_5_div") == 6, "lane 5's division moved")
+ok(params:get("lane_2_div") == 5,
+   "scope=lane did not widen a lane setting (lane 2 still " ..
+   params:get("lane_2_div") .. ")")
+set_scope(4)
+ok(goto_field("division"), "back on division")
+enc(3, 1)
+local spread = true
+for i = 1, 8 do
+  if params:get("lane_" .. i .. "_div") ~= params:get("lane_5_div") then
+    spread = false
+  end
+end
+ok(spread, "scope=all set every lane's division to the same value")
+set_scope(1)
+
+---------------------------------------------------------------- arc broadcast
+section("arc broadcast")
+local arc_obj = S.arc_obj
+for i = 1, 8 do params:set("lane_" .. i .. "_level", 1.0) end
+-- page 1 ring 4 is level; without K1 held only the selected lane moves
+params:set("sel_lane", 2)
+local before = params:get("lane_7_level")
+for _ = 1, 20 do arc_obj.delta(4, 5) end
+ok(params:get("lane_2_level") ~= 1.0, "an arc turn moved the selected lane")
+ok(params:get("lane_7_level") == before,
+   "...and left the others alone with K1 up")
+-- now with K1 held
+for i = 1, 8 do params:set("lane_" .. i .. "_level", 1.0) end
+key(1, 1)
+for _ = 1, 20 do arc_obj.delta(4, 5) end
+key(1, 0)
+ok(params:get("lane_7_level") ~= 1.0,
+   "holding K1 broadcast the arc turn to every lane (lane 7 now " ..
+   params:get("lane_7_level") .. ")")
+ok(params:get("lane_2_level") == params:get("lane_7_level"),
+   "every lane moved by the same amount")
 
 ---------------------------------------------------------------- keys / encs
 section("keys and encoders")
@@ -332,6 +651,69 @@ try("K2 and K3, shifted and not", function()
   end
   key(1, 0)
 end)
+
+---------------------------------------------------------------- footer
+section("what-next footer")
+local next_text = S.upvalue(redraw, "next_text")
+local arc_fresh = S.upvalue(redraw, "arc_fresh")
+ok(type(next_text) == "function", "next_text is reachable")
+ok(type(arc_fresh) == "function", "arc_fresh is reachable")
+
+params:set("sel_lane", 1)
+local NL = S.get_lanes()
+for i = 1, 8 do
+  params:set("lane_" .. i .. "_follow", 0)
+  params:set("lane_" .. i .. "_trans", 2) -- legato, whatever ran before
+end
+NL[1].queued = nil
+
+-- with nothing pending it falls back to the lane's transition
+local base = next_text(NL[1])
+ok(base:find("legato") ~= nil, "idle footer names the transition (" .. base .. ")")
+
+-- a queued launch names where it is going and how far off
+NL[1]:launch(5)
+local q = next_text(NL[1])
+ok(q:find(">") ~= nil, "a queued launch is marked with > (" .. q .. ")")
+ok(q:find(NL[1].bank[5].name, 1, true) ~= nil,
+   "...and names the kit it is going to (" .. q .. ")")
+NL[1].queued = nil
+
+-- with follow armed it counts down to the action instead
+params:set("lane_1_follow", 1)
+NL[1].bank[NL[1].active].follow.time = 16
+NL[1].bank[NL[1].active].follow.a = 7 -- other
+NL[1].step_count = 0
+local fl = next_text(NL[1])
+ok(fl:find("other") ~= nil, "footer names the follow action (" .. fl .. ")")
+
+-- nothing it can produce should overflow the screen
+local longest = 0
+for i = 1, 8 do
+  params:set("sel_lane", i)
+  NL[i]:launch(8)
+  longest = math.max(longest, #next_text(NL[i]))
+  NL[i].queued = nil
+  params:set("lane_" .. i .. "_trans", 4) -- handover, the longest name
+  longest = math.max(longest, #next_text(NL[i]))
+end
+ok(longest <= 26, "the footer stays inside a 128px line (" .. longest ..
+   " chars at worst)")
+
+-- the arc footer borrows the line briefly after a ring moves, then gives
+-- it back. without the hold it squatted there permanently showing a stale
+-- value long after the arc was last touched.
+S.now = 100
+S.arc_obj.delta(1, 30)
+ok(arc_fresh(), "the arc takes the line just after a ring moves")
+S.now = 100 + 0.5
+ok(arc_fresh(), "...and holds it briefly")
+S.now = 100 + 5
+ok(not arc_fresh(), "...then hands it back (" .. tostring(S.now) .. ")")
+try("redraw with a stale arc footer", redraw)
+
+params:set("sel_lane", 1)
+for i = 1, 8 do params:set("lane_" .. i .. "_trans", 2) end
 
 ---------------------------------------------------------------- arc
 section("arc")
@@ -394,9 +776,55 @@ ok(L[2].bank[5].follow.chance == 35, "follow chance came back (got " ..
    L[2].bank[5].follow.chance .. ")")
 ok(L[2].bank[5].length == 12, "pattern length came back (got " ..
    L[2].bank[5].length .. ")")
-ok(params:get("lane_1_div") == 3,
-   "a lane param was restored from the data file and pushed back to params" ..
-   " (got " .. params:get("lane_1_div") .. ")")
+-- lane settings live in params, so a pset restores them the ordinary way
+-- and the data file must NOT also carry them back. that double home is why
+-- every setting used to survive a power cycle: the autosave blob quietly
+-- overrode whatever the params said.
+ok(params:get("lane_1_div") == 6,
+   "the data file did not override a lane param (got " ..
+   params:get("lane_1_div") .. ", set to 6 before the read)")
+
+-- and the lane object agrees with the param rather than the file
+ok(L[1].div == 6, "the lane followed the param, not the blob (got " ..
+   L[1].div .. ")")
+
+---------------------------------------------------------------- defaults
+section("reset to factory")
+-- the autosave keeps pattern edits across power cycles, which is usually
+-- wanted; this is the way back out of it
+L[2].bank[5].follow.chance = 15
+L[2].bank[5].length = 7
+Pattern_edited = true
+params:set("lane_3_div", 2)
+params:set("lane_4_mute", 1)
+L[1].active = 6
+
+try("reset to factory kits", function()
+  params:lookup_param("reset_defaults").action()
+end)
+
+ok(L[2].bank[5].follow.chance ~= 15, "an edited follow chance was reset")
+ok(L[2].bank[5].length == 16 or L[2].bank[5].length == 32,
+   "pattern length went back to the kit's own (got " ..
+   L[2].bank[5].length .. ")")
+ok(params:get("lane_3_div") == 5, "a lane setting went back to default (got " ..
+   params:get("lane_3_div") .. ")")
+ok(params:get("lane_4_mute") == 0, "a muted lane was unmuted")
+ok(L[1].active == 1, "every lane went back to kit 1")
+ok(L[3].div == 5, "the lane object followed its param back")
+
+-- and the factory library really is back, not just cleared
+local restored = 0
+for i = 1, 8 do
+  for s = 1, 8 do
+    local pat = L[i].bank[s]
+    for slot = 1, pat.slots do
+      if next(pat.trigs[slot]) ~= nil then restored = restored + 1 break end
+    end
+  end
+end
+ok(restored > 30, "the factory kits are back, not an empty bank (" ..
+   restored .. " non-empty patterns)")
 
 try("action_delete", function() params.action_delete("x", "test", 7) end)
 

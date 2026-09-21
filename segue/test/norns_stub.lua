@@ -20,7 +20,10 @@ util = {
     if x >= b then return d end
     return (x - a) / (b - a) * (d - c) + c
   end,
-  time = function() return os.clock() end,
+  -- a wall clock the test drives, not the real one. anything that fades,
+  -- holds or rate-limits reads this, so those behaviours are testable
+  -- instead of being whatever os.clock() happened to say.
+  time = function() return S.now end,
   acronym = function(s)
     local out = ""
     for w in s:gmatch("%S+") do out = out .. w:sub(1, 1):upper() end
@@ -29,6 +32,7 @@ util = {
   file_exists = function(p) return S.files[p] ~= nil end,
 }
 
+S.now = 0        -- the virtual wall clock; tests move it forward
 S.files = {}
 _path = {code = "/home/we/dust/code/", data = "/home/we/dust/data/"}
 norns = {state = {data = "/home/we/dust/data/segue/"}}
@@ -84,12 +88,32 @@ end
 ---------------------------------------------------------------- params
 local Param = {}
 Param.__index = Param
+-- a norns Control keeps `raw` (0-1) as the real state and derives `value`
+-- from it by mapping and quantizing to the step grid. that separation is
+-- load-bearing: delta accumulates in raw, so repeated small nudges do
+-- eventually cross a step boundary even though the quantized value sits
+-- still in between. a stub that recomputed raw from the quantized value
+-- would never move at all.
+local function cs_map(cs, raw)
+  local v = cs.minval + util.clamp(raw, 0, 1) * (cs.maxval - cs.minval)
+  if cs.step and cs.step > 0 then
+    v = util.round((v - cs.minval) / cs.step) * cs.step + cs.minval
+  end
+  return util.clamp(v, cs.minval, cs.maxval)
+end
+
+local function cs_unmap(cs, v)
+  return util.clamp((v - cs.minval) / (cs.maxval - cs.minval), 0, 1)
+end
+
 function Param:get() return self.value end
 function Param:set(v) self.value = v end
-function Param:get_raw()
+function Param:get_raw() return self.raw or 0 end
+function Param:set_raw(r)
   local cs = self.controlspec
-  if not cs then return 0 end
-  return (self.value - cs.minval) / (cs.maxval - cs.minval)
+  if not cs then return end
+  self.raw = util.clamp(r, 0, 1)
+  self.value = cs_map(cs, self.raw)
 end
 function Param:string()
   if self.formatter then return tostring(self.formatter(self)) end
@@ -124,8 +148,10 @@ function params:add_group(id, name, n)
   self.open_group = self.groups[#self.groups]
 end
 function params:add_control(id, name, cs, formatter)
-  add_param{id = id, name = name, controlspec = cs, value = cs.default,
-            formatter = formatter, kind = "control"}
+  local p = {id = id, name = name, controlspec = cs, value = cs.default,
+             formatter = formatter, kind = "control"}
+  p.raw = cs_unmap(cs, cs.default)
+  add_param(p)
   count_into_group()
 end
 function params:add_trigger(id, name)
@@ -155,17 +181,41 @@ function params:string(id) return self:lookup_param(id):string() end
 function params:set(id, v, silent)
   local p = self:lookup_param(id)
   local cs = p.controlspec
-  if cs then v = util.clamp(v, cs.minval, cs.maxval) end
-  if p.min then v = util.clamp(v, p.min, p.max) end
-  if p.options then v = util.clamp(v, 1, #p.options) end
-  p.value = v
-  if p.action and not silent then p.action(v) end
+  if cs then
+    -- go through raw, so a later delta carries on from where set left off
+    p:set_raw(cs_unmap(cs, util.clamp(v, cs.minval, cs.maxval)))
+    v = p.value
+  else
+    if p.min then v = util.clamp(v, p.min, p.max) end
+    if p.options then v = util.clamp(v, 1, #p.options) end
+    p.value = v
+  end
+  if p.action and not silent then p.action(p.value) end
 end
+-- norns' ParamSet:delta hands off to the param object, and Control:delta is
+-- `set_raw(raw + d/100)` -- it moves 1/100 of the RANGE and ignores the
+-- param's step entirely. that means a control with only a few steps needs
+-- many clicks to move one of them (a 4-option control takes 33), which is
+-- a real and very noticeable UI problem. an earlier version of this stub
+-- moved by one step instead, which was kinder than the hardware and hid
+-- the bug from every test in the suite -- so it models the quirk now.
+--
+-- a script can override the behaviour per param by assigning p.delta, the
+-- same way it can on norns, and that path is honoured here too.
 function params:delta(id, d)
   local p = self:lookup_param(id)
-  local step = (p.controlspec and p.controlspec.step) or 1
-  if step == 0 then step = 0.01 end
-  self:set(id, p.value + d * step)
+  if p.delta then
+    p.delta(p, d)
+    return
+  end
+  local cs = p.controlspec
+  if cs then
+    local before = p.value
+    p:set_raw(p.raw + d / 100)
+    if p.action and p.value ~= before then p.action(p.value) end
+  else
+    self:set(id, p.value + d)
+  end
 end
 function params:set_action(id, fn) self:lookup_param(id).action = fn end
 function params:bang()
@@ -184,14 +234,23 @@ clock = {
     if not ok then error("clock coroutine failed on start: " .. tostring(err)) end
     return #S.coros
   end,
-  sync = function() coroutine.yield() end,
-  sleep = function() coroutine.yield() end,
+  -- a virtual beat clock. clock.sync(d) waits for the next multiple of d
+  -- beats, so from a boundary it advances exactly d -- which is what a
+  -- script driving itself at a fixed subdivision sees. get_beats() reads
+  -- it back, so code that derives its position from the shared timeline
+  -- (rather than counting its own ticks) can be tested at all.
+  sync = function(d)
+    S.beats = S.beats + (d or 1)
+    coroutine.yield()
+  end,
+  sleep = function() coroutine.yield() end, -- sleeping does not move beats
   cancel = function(id) if S.coros[id] then S.coros[id] = false end end,
   get_tempo = function() return 120 end,
-  get_beats = function() return 0 end,
+  get_beats = function() return S.beats end,
   get_beat_sec = function() return 0.5 end,
   transport = {},
 }
+S.beats = 0
 
 -- resume a clock coroutine n times, surfacing any error with its traceback
 function S.advance(id, n)
@@ -359,6 +418,11 @@ function S.get_lanes() return S.upvalue(redraw, "lanes") end
 -- norns provides clock_midi_out_N system params; the script reads them to
 -- decide who to send transport to
 function S.add_system_params()
+  -- norns' own clock params; the script reads clock_source to decide
+  -- whether its pattern grid should lock to a shared timeline
+  add_param{id = "clock_source", name = "clock source", value = 1,
+            kind = "option", options = {"internal", "midi", "link", "crow"}}
+  add_param{id = "clock_tempo", name = "tempo", value = 120, kind = "number"}
   for i = 1, 16 do
     add_param{id = "clock_midi_out_" .. i, name = "midi out " .. i,
               value = (i == 1) and 1 or 0, kind = "option"}

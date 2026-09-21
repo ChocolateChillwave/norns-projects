@@ -21,9 +21,21 @@ device or against a real Summit.
   100 never below 50, cutoff mean 94 never below 45, resonance mean 24
   capped at 70, noise mix mean 14 capped at 40.
   - min/max stays the real CC range, so **nothing is unreachable by hand**.
+  - **Outliers (2026-09-20).** A hard window floor made the extremes
+    unreachable by the dice, not just rare — a pluck's sustain of 0 or a
+    slow pad attack could never turn up. "outliers" (default 10%) is the
+    per-param chance of ignoring the window and drawing uniformly from
+    outside it instead, so sustain now reads: 10% of rolls below the
+    window, ~3.5% landing in 0-15, mean 94 rather than 102. Set it to 0%
+    for the strict window.
+  - `hard = "min"/"max"/"both"` exempts a param from outliers on the
+    dangerous side. Only delay feedback carries it (top end doesn't decay
+    on its own). `hard` blocks the dice only: "wide" mode and widen range
+    are deliberate and still open the param fully.
   - Opening up: K3 cycles one param tame → wide → locked; "widen range"
     (0-100%) blends every window toward full at once; the chaos recipe
-    forces 100%. Bias fades out as the window opens.
+    forces 100%. Bias fades out as the window opens, and a "wide" param
+    ignores outliers since it's already uniform.
   - Windows show as ticks on each param's bar, and they follow the active
     recipe, so switching to `pad` visibly moves the windows.
 - Tuning params (osc range/coarse, all pitch-mod depths), glide on, LFO

@@ -143,6 +143,54 @@ for _ = 1, 300 do
 end
 ok(hits == 300, "a recipe window is respected exactly (" .. hits .. "/300)")
 
+---------------------------------------------------------------- outliers
+section("outliers")
+local sus = slot("amp_s")
+local topts = {amount = 1, lo = 0, hi = 1, spread = 0, tails = 0.1}
+local outside, zeroish, minv, maxv = 0, 0, 999, -1
+local N = 4000
+for _ = 1, N do
+  local v = core:roll(sus, topts)
+  if v < sus.desc.rmin then outside = outside + 1 end
+  if v <= 5 then zeroish = zeroish + 1 end
+  minv, maxv = math.min(minv, v), math.max(maxv, v)
+end
+local pct = outside / N * 100
+ok(pct > 5 and pct < 16, "about 10% of rolls land outside the window (got "
+   .. string.format("%.1f", pct) .. "%)")
+ok(zeroish > 0, "a sustain of ~0 is reachable again (" .. zeroish .. "/" .. N .. ")")
+ok(minv >= sus.desc.min and maxv <= sus.desc.max, "outliers stay inside the real CC range")
+
+local none = 0
+for _ = 1, 500 do
+  if core:roll(sus, {amount = 1, lo = 0, hi = 1, spread = 0, tails = 0}) < sus.desc.rmin then
+    none = none + 1
+  end
+end
+ok(none == 0, "outliers 0% is the old strict window")
+
+-- hard caps: an outlier may go under the window but never over it
+local fb = slot("dly_fb")
+ok(fb.desc.hard == "max", "delay feedback is hard-capped at the top")
+local over, under = 0, 0
+for _ = 1, 2000 do
+  local v = core:roll(fb, {amount = 1, lo = 0, hi = 1, spread = 0, tails = 1})
+  if v > fb.desc.rmax then over = over + 1 end
+  if v < fb.desc.rmin then under = under + 1 end
+end
+ok(over == 0, "no outlier ever exceeds a hard max (" .. over .. ")")
+ok(under > 0, "the un-capped side still produces outliers (" .. under .. ")")
+
+-- a param the user opened up ignores tails: it is already fully open
+local w = slot("mix_noise")
+core:set_mode(w, "wide")
+local hi_hits = 0
+for _ = 1, 500 do
+  if core:roll(w, topts) > w.desc.rmax then hi_hits = hi_hits + 1 end
+end
+ok(hi_hits > 100, "a wide param is uniformly open, not window + tails")
+core:set_mode(w, "tame")
+
 ---------------------------------------------------------------- bias
 section("bias")
 local function mean(id, o, count, override)

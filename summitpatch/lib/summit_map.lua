@@ -146,7 +146,9 @@ Map.pages = {
     cc("rev_lvl", "REV", 112, {rmin = 0, rmax = 70}),
     cc("dly_lvl", "DLY", 108, {rmin = 0, rmax = 60}),
     cc("dly_time", "DL TM", 109),
-    cc("dly_fb", "DL FB", 110, {rmin = 20, rmax = 70}),
+    -- hard: an outlier may fall below this window but never above it --
+    -- delay feedback at the top doesn't decay away on its own
+    cc("dly_fb", "DL FB", 110, {rmin = 20, rmax = 70, hard = "max"}),
     cc("rev_time", "REV T", 113, {rmin = 30, rmax = 100}),
   }},
   {name = "STRUCT", nrpn_page = true, slots = {

@@ -5,15 +5,15 @@
 -- comes from -- a hat lane can hand itself a new pattern every half bar
 -- while the kick lane holds the same one for four.
 --
--- TIMING. everything is integer ticks at 24 PPQN, driven by a single master
--- clock coroutine in segue.lua rather than one coroutine per lane. 24 ticks
--- to the beat is the smallest resolution where every division we want is a
--- whole number of ticks -- 1/4 is 24, 1/8 is 12, 1/16 is 6, 1/32 is 3, and
--- the triplets are 16 / 8 / 4 / 2 -- so quantize boundaries, follow times
--- and beat-repeat buckets are all exact integer comparisons with no
--- floating-point fuzz to guard against. every division also divides a bar
--- (96 ticks) evenly, so a lane always has a step landing exactly on any
--- launch-quantize boundary, whatever division it is running at.
+-- TIMING. everything is integer ticks at 96 PPQN, driven by a single master
+-- clock coroutine in segue.lua rather than one coroutine per lane. every
+-- division we want is a whole number of ticks -- 1/4 is 96, 1/8 is 48, 1/16
+-- is 24, 1/32 is 12, and the triplets are 64 / 32 / 16 / 8 -- so quantize
+-- boundaries, follow times and beat-repeat buckets are all exact integer
+-- comparisons with no floating-point fuzz to guard against. every division
+-- also divides a bar (384 ticks) evenly, so a lane always has a step landing
+-- exactly on any launch-quantize boundary, whatever division it runs at.
+-- see the PPQN constant below for why it is 96 and not 24.
 --
 -- THE SWITCH. this is the point of the script, so it is worth being precise
 -- about where it happens. the follow check runs at the TOP of a tick, after
@@ -30,20 +30,40 @@
 -- that libs don't include each other.
 local Lane = {}
 
-Lane.PPQN = 24
+-- 96 ticks to the beat, raised from 24 on 2026-09-20. 24 was the smallest
+-- resolution at which every division and every bar boundary is a whole
+-- number of ticks, and it is still the reason all the timing maths here is
+-- integer -- but it put a floor under swing. a 16th was 6 ticks, so the
+-- only reachable swing amounts were 0 / 17 / 33 / 50%, and the breaks this
+-- library is built around live in between those. at 96 a 16th is 24 ticks,
+-- which is roughly 4% resolution.
+--
+-- the cost is four times as many clock wakeups: 192/sec at 120bpm rather
+-- than 48. polyphasic runs a 96 PPQN lattice on this hardware and has been
+-- played, so there is direct precedent that a Pi copes -- but this script
+-- ticks eight lanes per wakeup, so Lane:tick opens with the cheapest
+-- possible rejection (one modulo, two compares) for the common case of
+-- "not this lane's step".
+Lane.PPQN = 96
 Lane.TICKS_PER_BAR = Lane.PPQN * 4
 Lane.TICKS_PER_16TH = Lane.PPQN / 4
 Lane.PATTERN_COUNT = 8
 
 Lane.DIV_NAMES = {"1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"}
-Lane.DIV_TICKS = {24, 16, 12, 8, 6, 4, 3, 2}
+Lane.DIV_TICKS = {96, 64, 48, 32, 24, 16, 12, 8}
 Lane.DIV_16TH = 5 -- index of "1/16", the default
+
+-- swing is a percentage of the lane's own step, not a tick count, so it
+-- means the same thing whatever division the lane runs at. 75% is the cap:
+-- past that the swung step is closer to the following downbeat than its
+-- own, which stops reading as swing.
+Lane.SWING_MAX = 75
 
 -- launch quantize, in ticks. QUANT_PATTERN waits for the lane's own loop
 -- rather than a fixed musical grid, which is the familiar clip-launch feel
 -- on a lane whose pattern is not a whole number of bars long.
 Lane.QUANT_PATTERN = -1
-Lane.QUANT_TICKS = {0, 3, 6, 12, 24, 48, 96, 192, Lane.QUANT_PATTERN}
+Lane.QUANT_TICKS = {0, 12, 24, 48, 96, 192, 384, 768, Lane.QUANT_PATTERN}
 Lane.QUANT_NAMES = {"instant", "1/32", "1/16", "1/8", "1/4", "1/2",
                     "1 bar", "2 bar", "pattern"}
 
@@ -75,7 +95,7 @@ function Lane:new(args)
   m.step_count = 0                 -- steps played since the last commit
 
   m.div = Lane.DIV_16TH
-  m.swing = 0                      -- ticks to delay every second step
+  m.swing = 0                      -- percent of a step, 0-75
   m.mute = false
   m.level = 1.0                    -- velocity scale
   m.prob = 1.0                     -- per-trig probability
@@ -93,8 +113,8 @@ function Lane:new(args)
   m.morph_total = 0
   m.morph_mode = nil
 
-  -- preallocated hit buffer -- tick() runs up to 48 times a second across
-  -- 8 lanes, so it must not allocate (CLAUDE.md's CPU budget rule)
+  -- preallocated hit buffer -- tick() runs 192 times a second across 8
+  -- lanes, so it must not allocate (CLAUDE.md's CPU budget rule)
   m.hits = {}
   for i = 1, m.slots do m.hits[i] = {voice = 0, vel = 0} end
   m.hit_count = 0
@@ -116,6 +136,19 @@ function Lane:div_ticks()
   if self.boost then dt = math.floor(dt / 2) end
   if dt < 1 then dt = 1 end
   return dt
+end
+
+-- swing as a tick offset for this lane's current step length. stored as a
+-- percentage (0-75) so it survives a division change meaning the same
+-- thing; the achievable resolution is one tick, which at a 1/16 division
+-- (24 ticks) is about 4%.
+function Lane:swing_ticks(dt)
+  if self.swing <= 0 then return 0 end
+  dt = dt or self:div_ticks()
+  local ticks = math.floor(self.swing / 100 * dt + 0.5)
+  if ticks >= dt then ticks = dt - 1 end
+  if ticks < 0 then ticks = 0 end
+  return ticks
 end
 
 ---------------------------------------------------------------- follow actions
@@ -238,6 +271,34 @@ function Lane:launch(idx, trans)
   self.queued_trans = trans or self.transition
 end
 
+-- how many of this lane's own steps until a queued launch commits, or nil
+-- if nothing is waiting. walks forward rather than dividing, because the
+-- commit lands on the lane's next STEP whose grid tick sits on a quantize
+-- boundary -- which is not the same as the next boundary when the lane's
+-- division is coarser than the quantize setting.
+function Lane:steps_to_launch(t, quant)
+  if self.queued == nil then return nil end
+  if quant == nil or quant == 0 then return 0 end
+  if quant == Lane.QUANT_PATTERN then
+    return self:pattern().length - self.pos + 1
+  end
+  local dt = self:div_ticks()
+  local k = math.floor(t / dt)
+  for n = 1, 256 do
+    if ((k + n) * dt) % quant == 0 then return n end
+  end
+  return nil
+end
+
+-- how many steps until this pattern's follow action fires, or nil if it
+-- never will (follow off for the lane, or the pattern's time set to off)
+function Lane:steps_to_follow()
+  if not self.follow_on then return nil end
+  local need = self:follow_steps()
+  if need == nil then return nil end
+  return math.max(0, need - self.step_count)
+end
+
 function Lane:_boundary(grid_tick, quant)
   if quant == nil or quant == 0 then return true end
   if quant == Lane.QUANT_PATTERN then return self.pos == 1 end
@@ -292,18 +353,24 @@ end
 -- next tick). returns 0 when this tick is not one of the lane's steps.
 function Lane:tick(t, quant)
   local dt = self:div_ticks()
-  local k = math.floor(t / dt)
-  local r = t - k * dt
+  local r = t % dt
+  local sw = self:swing_ticks(dt)
 
-  -- swing delays every second step by a whole number of ticks. at 24 PPQN
-  -- a 16th is 6 ticks, so the reachable amounts are 0 / 17% / 33% / 50% --
-  -- coarse, but those are the musically useful ones and it keeps the whole
-  -- timeline on exact integers.
+  -- the cheapest possible rejection first. at 96 PPQN this runs 192 times a
+  -- second per lane and almost always lands here, so it is one modulo and
+  -- two compares before anything else is computed.
+  if r ~= 0 and r ~= sw then return 0 end
+
+  local k = (t - r) / dt
+
+  -- swing delays every second step. `sw` is already in ticks, worked out
+  -- from the lane's own step length, so the percentage means the same
+  -- thing at any division.
   local fire
   if r == 0 then
-    fire = (self.swing == 0) or (k % 2 == 0)
+    fire = (sw == 0) or (k % 2 == 0)
   else
-    fire = (self.swing > 0) and (r == self.swing) and (k % 2 == 1)
+    fire = (sw > 0) and (k % 2 == 1)
   end
   if not fire then return 0 end
 
@@ -313,7 +380,15 @@ function Lane:tick(t, quant)
     self.pos = self.pos + 1
     if self.pos > self:pattern().length then self.pos = 1 end
   else
+    -- first step after a start: take the playhead from where the shared
+    -- timeline says it should be, rather than always beginning at step 1.
+    -- that is what makes joining a Link session late sound right -- the
+    -- pattern is already in the correct place relative to everyone else,
+    -- instead of starting its phrase wherever the transport happened to
+    -- begin. the caller controls this by choosing the tick origin: with an
+    -- origin of "now", k is 0 here and this still lands on step 1.
     self.started = true
+    self.pos = (k % self:pattern().length) + 1
   end
 
   -- follow first: it belongs to the pattern that just finished playing, and
@@ -385,18 +460,27 @@ function Lane:serialize()
   return t
 end
 
-function Lane:deserialize(t)
+-- `opts.settings` restores the values that a caller might instead be
+-- holding in params (division, swing, level, mute, follow, transition,
+-- morph). it defaults to OFF, which is the important half of the contract:
+-- segue keeps those in norns params, so a data blob restoring them too
+-- would give the same value two homes and let the blob quietly win. the
+-- flag exists so the round trip can still be tested end to end.
+function Lane:deserialize(t, opts)
   if type(t) ~= "table" then return end
+  opts = opts or {}
   self.active = t.active or 1
-  self.div = t.div or Lane.DIV_16TH
-  self.swing = t.swing or 0
-  self.mute = t.mute or false
-  self.level = t.level or 1.0
-  self.prob = t.prob or 1.0
-  if t.follow_on ~= nil then self.follow_on = t.follow_on end
+  if opts.settings then
+    self.div = t.div or Lane.DIV_16TH
+    self.swing = t.swing or 0
+    self.mute = t.mute or false
+    self.level = t.level or 1.0
+    self.prob = t.prob or 1.0
+    if t.follow_on ~= nil then self.follow_on = t.follow_on end
+    self.transition = t.transition or Lane.TRANS_LEGATO
+    self.morph_steps = t.morph_steps or 8
+  end
   if t.skip_empty ~= nil then self.skip_empty = t.skip_empty end
-  self.transition = t.transition or Lane.TRANS_LEGATO
-  self.morph_steps = t.morph_steps or 8
   if t.voices then
     self.voices = {}
     for i = 1, #t.voices do self.voices[i] = t.voices[i] end

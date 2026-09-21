@@ -1,6 +1,6 @@
 # segue — user manual
 
-**v0.2.0** · MIDI-out drum sequencer for monome norns, built for the Elektron
+**v0.7.0** · MIDI-out drum sequencer for monome norns, built for the Elektron
 Analog Rytm. Grid and arc supported. No internal sound engine — segue plays
 the Rytm.
 
@@ -20,24 +20,27 @@ beat continues instead of restarting.
 4. **midi channel** and **note layout** just below it should already be right
    (channel 1, notes 0–11). If your Rytm is set up differently, see §8.
 5. Optional, **PARAMETERS > CLOCK**: tempo source (internal, MIDI, Link).
+   See §12 for how the pattern grid lines up with a shared clock.
 
 A grid is strongly recommended. segue will use two 8×8 grids, one 16×8, or a
 single 8×8, and works out which you have on its own — see §3.
 
 ## 2. Quick start
 
-1. **K3** starts the transport. You should hear a beat immediately — every
-   lane starts on its first pattern and the library is already filled in.
-2. Press cells in the **left-hand 8×8** (the LAUNCH grid). Columns are lanes,
-   rows are that lane's eight patterns. Press one and it changes at the next
-   bar line.
-3. Listen to the hat lanes (columns 5 and 6) over a couple of bars — they
-   have follow actions on by default and will move on their own.
-4. **E1** picks a lane, **E2** picks one of its patterns. The screen shows
+1. **K3** starts the transport. You should hear the amen break — every lane
+   starts on kit 1 and the library is already filled in.
+2. Tap **FX row 2** buttons to launch whole kits: 2 is a straight four-four,
+   4 is electro, 7 halftime. The change lands at the next bar line.
+3. Now press a single cell in the **left-hand 8×8** (the LAUNCH grid) —
+   columns are lanes, rows are kits. Pressing column 2, row 6 puts the funky
+   snare under whatever else is playing.
+4. Listen to the hat lanes (columns 5 and 6) over a couple of bars — they
+   have follow actions on by default and will move between kits on their own.
+5. **E1** picks a lane, **E2** picks one of its patterns. The screen shows
    what that pattern's follow action is set to.
-5. **E3** edits the value shown at the bottom of the screen. **Hold K1 and
+6. **E3** edits the value shown at the bottom of the screen. **Hold K1 and
    turn E3** to choose which value that is.
-6. **K1 + K3** panics if anything gets stuck.
+7. **K1 + K3** panics if anything gets stuck.
 
 ## 3. The grids
 
@@ -53,37 +56,66 @@ The layout is printed to maiden on startup if you want to confirm it.
 
 ### LAUNCH
 
-Columns are lanes 1–8, rows are pattern slots 1–8.
+Columns are lanes 1–8. **Rows are kits** — slot N means the same beat on
+every lane, so row 1 is the amen break right across the grid, row 2 is a
+straight four-four, and so on:
+
+| row | kit | steps | |
+|-----|-----|-------|---|
+| 1 | amen | 32 | the break — two bars, because bar two is what makes it |
+| 2 | four four | 16 | straight techno, clap on the backbeat, no snare |
+| 3 | think | 16 | the other break — busier kick, ghosted snares |
+| 4 | electro | 16 | 808 syncopation, cowbell doing real work |
+| 5 | rolling | 16 | driving techno, 16th hats with ghosts |
+| 6 | funky | 16 | ghost notes are the whole point |
+| 7 | halftime | 32 | sparse, with a descending tom fill in bar two |
+| 8 | hypnotic | 16 | minimal — the useful one to drift *into* |
+
+That gives you three ways to play the same material:
+
+- **Launch a whole row** (FX row 2, the scene buttons) — the real,
+  interlocking beat.
+- **Launch a single cell** — borrow just that lane's part from another kit
+  over whatever else is playing. A funky snare under a techno kick.
+- **Leave it alone** — follow actions drift individual lanes between kits,
+  so every destination is a coherent part rather than a bar count.
+
+A dark cell means that kit has no part for that lane, on purpose: the amen
+has no cowbell. Those slots stay silent and follow actions step over them.
+
+This is the grid as it actually ships — the gaps are the kits that leave a
+lane out:
 
 ```
-        1      2      3      4      5      6      7      8
-      KICK   SNARE  CLAP   TOMS   CHH    OHH    CYM    COW
-    ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐
- 1  │ ███  │ ███  │ ███  │ ███  │ ███  │ ███  │ ███  │ ███  │  slot 1
-    ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
- 2  │  ▪   │  ▪   │  ▪   │  ▪   │ ███  │  ▪   │  ▪   │  ▪   │  slot 2
-    ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
- 3  │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▫   │  ▪   │  ▪   │  slot 3
-    ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
- 4  │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │    ·
-    ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
- 5  │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │    ·
-    ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
- 6  │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │    ·
-    ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
- 7  │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │    ·
-    ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
- 8  │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ·   │  ·   │  slot 8
-    └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘
+             1      2      3      4      5      6      7      8
+           KICK   SNARE  CLAP   TOMS   CHH    OHH    CYM    COW
+         ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐
+1 amen   │ ███  │ ███  │ ███  │ ███  │ ███  │ ███  │ ███  │  ·   │
+         ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+2 four   │  ▪   │  ·   │  ▪   │  ·   │  ▪   │  ▪   │  ·   │  ·   │
+         ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+3 think  │  ▪   │  ▪   │  ▪   │  ·   │  ▪   │  ▪   │  ▪   │  ·   │
+         ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+4 electro│  ▪   │  ▪   │  ▪   │  ▪   │  ▪   │  ·   │  ·   │  ▪   │
+         ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+5 rolling│  ▪   │  ·   │  ▪   │  ·   │  ▫   │  ▪   │  ▪   │  ·   │
+         ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+6 funky  │  ▪   │  ▪   │  ▪   │  ·   │  ▪   │  ▪   │  ▪   │  ·   │
+         ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+7 half   │  ▪   │  ▪   │  ·   │  ▪   │  ▪   │  ▪   │  ▪   │  ·   │
+         ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+8 hypno  │  ▪   │  ·   │  ▪   │  ▪   │  ▪   │  ·   │  ·   │  ▪   │
+         └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘
 
     ███  playing — and fading as its loop plays out
      ▫   queued  — blinking, waiting for the quantize boundary
-     ▪   has a pattern in it
-     ·   empty (follow actions skip these)
+     ▪   this kit has a part for this lane
+     ·   this kit leaves this lane out (follow actions skip these)
 ```
 
-Above: every lane is on slot 1 except CHH, which is playing slot 2 and has
-slot 3 queued. CYM and COW ship with slot 8 empty.
+Above: every lane is playing the amen, and the closed hat has the rolling
+kit's hat queued — it will swap in while everything else stays put. Note the
+COW column: only electro and hypnotic use the cowbell at all.
 
 - **Press** a cell to launch that pattern on that lane. It takes effect at
   the next launch-quantize boundary (1 bar by default), and the cell blinks
@@ -140,6 +172,17 @@ Row by row:
 | **7 · transition** | Cols 1–4 pick the transition for **all** lanes (the lit one is current). Cols 5–6 step launch quantize down/up, cols 7–8 the morph window length. |
 | **8 · transport** | **play/stop** · **reseed** (every follow-enabled lane jumps somewhere new now) · **follow all** on/off · **store scene** (hold, then tap a scene) · **panic** · **step edit** (toggle — see §7). |
 
+### Focus mode
+
+**PARAMETERS > GLOBAL > mode** ships on **focus**, which dims three FX rows
+— 1 (beat repeat), 4 (solo) and 6 (roll) — and trims the screen's editable
+fields from eleven to eight. They are hidden, not removed: a press on a dark
+row does nothing, and switching to **full** brings everything back.
+
+The reason is ordering. The follow engine and the kit library are the parts
+still being judged; the performance layer is a distraction until those two
+sound right. Turn it to `full` whenever you want the rest.
+
 ## 4. Follow actions
 
 This is the heart of it. Every pattern carries its own follow setting:
@@ -163,6 +206,12 @@ button.
 Out of the box: kick, snare, clap, cymbal and cowbell hold their pattern;
 toms step to the next fill each time round; the hats jump to another pattern
 some of the time. Change any of it per pattern on the screen.
+
+**→ [FOLLOW.md](FOLLOW.md) is the full reference** — exactly when the action
+fires and why that matters, what each action does, what it is allowed to
+land on, how the transitions interact with it, and a set of recipes worth
+trying. Read it if you want to actually compose with this rather than just
+let it run.
 
 ## 5. Transitions
 
@@ -224,8 +273,16 @@ legato  q 1 bar
 
 The editable fields, in order: follow time, action A, action B, chance,
 pattern length, transition, division, swing, chance-per-trig, level, morph
-steps. The first five belong to the selected *pattern*; the rest to the
-selected *lane*.
+steps, **scope**. The first five belong to the selected *pattern*; the next
+six to the selected *lane*.
+
+**scope** is the last one and it widens what a follow edit writes to —
+`pattern`, `lane` (all 8 of the selected lane's), `kit` (the selected slot
+on all 8 lanes) or `all`. While it is set to anything but `pattern` the
+field line shows it in brackets, e.g. `[KIT] chance 40%`. Full details in
+[FOLLOW.md §9](FOLLOW.md).
+
+Holding **K1** while turning an arc ring applies it to every lane at once.
 
 ## 7. Step editing
 
@@ -319,21 +376,39 @@ The arc's own button cycles pages.
 | **PLAY** | division · swing · chance-per-trig · level |
 | **MORPH** | transition · morph steps · launch quantize · lane select |
 
+**swing** is a percentage of the lane's own step, 0–75%, so it means the
+same thing whatever division the lane runs at. The clock can land on about
+every 4% at a 1/16 division, and the displayed value is what will actually
+be played rather than what you asked for — so it may settle a percent or
+two off where you turned it. 50% is a true triplet feel.
+
 Rings act on the **selected lane** (except launch quantize, which is global,
 and lane select, which changes what everything else points at). Holding
-**K1** while turning does nothing extra here yet.
+**K1** while turning applies the ring to *every* lane — see
+[FOLLOW.md §9](FOLLOW.md).
 
 **PARAMETERS > ARC** has sensitivity, brightness, tick level, and an
 orientation setting that rotates every ring a quarter turn so the arc reads
 right side up however it is sitting.
 
-## 10. Saving
+## 10. Saving, and getting back to the start
 
-**PARAMETERS > PSET > save** stores everything: all the settings, plus every
-pattern, follow setting and scene in a `.data` file alongside the pset.
+**What persists on its own:** segue saves your patterns on quit and reloads
+them next time, so an evening's edits survive a power cycle without you
+having to remember a pset. That covers pattern content, follow settings and
+which kit each lane is on.
 
-segue also saves the current state on quit and reloads it next time, so you
-do not lose an evening's edits by forgetting to make a pset.
+**What does not:** lane settings — division, swing, level, mute, follow
+on/off, transition, morph — come back at their defaults every time. They
+live in params, so a **pset** is how you keep a particular set of them.
+
+**PARAMETERS > patterns > reset to factory kits** puts everything back: the
+shipped eight kits, default scenes, every lane setting at its default. That
+is the way out if you have edited yourself into a corner.
+
+**PARAMETERS > PSET > save** stores the lot deliberately: every setting, plus
+every pattern, follow setting and scene, in a `.data` file alongside the
+pset. That is the one to use for something you want to come back to.
 
 ## 11. If something goes wrong
 
@@ -348,3 +423,31 @@ do not lose an evening's edits by forgetting to make a pset.
   FX row 8 col 3 turns them all off at once.
 - **The grid is showing the wrong thing** — you may be in step-edit mode; FX
   row 8 col 6, or row 8 col 1 on the editor itself.
+
+## 12. Syncing to other gear
+
+**PARAMETERS > CLOCK > source** picks where tempo comes from — internal,
+MIDI, Link or crow. segue reads its position from that clock rather than
+counting from the moment you pressed play, which has one consequence worth
+understanding:
+
+- **On a shared clock (Link or MIDI):** the pattern grid is locked to the
+  shared timeline, so every peer agrees where the bar is. You can press play
+  whenever you like and it will land correctly — *including* landing in the
+  middle of a pattern, because that is where the shared timeline says you
+  are. Joining a session late drops you into the right part of the phrase
+  rather than restarting it.
+- **On the internal clock:** there is nobody to agree with, so pressing play
+  starts the pattern at step 1 where you pressed it.
+
+If a change is not landing when you expect, check the **launch quantize**
+setting (FX row 7, cols 5–6) before suspecting the clock — at `1 bar` a
+pressed pattern waits for the bar line, which is up to two seconds.
+
+Note that **follow actions ignore launch quantize entirely** and fire on
+their own schedule, which is deliberate — see [FOLLOW.md §7](FOLLOW.md).
+
+segue also sends MIDI **start** and **stop** to every port enabled under
+PARAMETERS > CLOCK > "midi out", so downstream gear follows its transport.
+norns streams the clock ticks themselves; segue only adds the transport
+messages.

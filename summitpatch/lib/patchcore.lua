@@ -14,6 +14,8 @@
 --            bias = "low"/"high"/"center": shape of the draw inside the
 --            window (an envelope attack wants to land short far more often
 --            than long, even within a tame window). lock = starts locked.
+--            hard = "min"/"max"/"both": the one kind of cap the outlier
+--            draw may not cross (see tail_room).
 --
 --   mode  -- per param, cycled by the script's lock key:
 --            "tame"   randomize inside rmin..rmax, with bias (default)
@@ -139,6 +141,41 @@ local function shape(u, bias, strength)
   return u + (b - u) * strength
 end
 
+-- how much room there is outside the window on each side, honouring a
+-- desc's `hard` cap ("min"/"max"/"both") -- the few places where an
+-- accidental extreme is a hazard rather than a surprise (runaway delay
+-- feedback, a compressor's makeup gain). `hard` only stops the dice:
+-- "wide" mode and widen range are deliberate, and still open the param.
+local function tail_room(d, lo, hi)
+  local below = (d.hard == "min" or d.hard == "both") and 0 or math.max(0, math.ceil(lo) - d.min)
+  local above = (d.hard == "max" or d.hard == "both") and 0 or math.max(0, d.max - math.floor(hi))
+  return below, above
+end
+
+-- one value: usually from inside the window (shaped by bias), but with
+-- probability `tails` from outside it instead. the extremes are musical
+-- sometimes -- sustain 0 for a pluck, a slow pad attack, a filter slammed
+-- shut -- they just shouldn't be as likely as the sane middle. outside
+-- draws are uniform, so a genuine 0 is as reachable as a near miss.
+function Core:draw(slot, lo, hi, opts)
+  local d = slot.desc
+  local wide = self:mode(slot) == "wide"
+  local tails = wide and 0 or (opts.tails or 0)
+  if tails > 0 and math.random() < tails then
+    local below, above = tail_room(d, lo, hi)
+    if below + above > 0 then
+      if math.random() * (below + above) < below then
+        return math.random(d.min, math.ceil(lo) - 1)
+      end
+      return math.random(math.floor(hi) + 1, d.max)
+    end
+  end
+  if d.discrete then return math.random(util.round(lo), util.round(hi)) end
+  local u = (opts.lo or 0) + math.random() * ((opts.hi or 1) - (opts.lo or 0))
+  u = shape(u, d.bias, 1 - (wide and 1 or (opts.spread or 0)))
+  return lo + u * (hi - lo)
+end
+
 -- amount 0..1: 1 = fresh random value, 0.25 = drift a quarter of the way
 -- from the current value toward a random one. for discrete params
 -- (waveforms, filter types) amount is the probability of re-rolling,
@@ -148,18 +185,16 @@ function Core:roll(slot, opts, range_override)
   local d = slot.desc
   local lo, hi = self:window(slot, opts.spread, range_override)
   local cur = self:get(slot)
+  local target = self:draw(slot, lo, hi, opts)
   if d.discrete then
     if math.random() > opts.amount then return cur end
-    return math.random(util.round(lo), util.round(hi))
+    return util.clamp(util.round(target), d.min, d.max)
   end
-  local u = (opts.lo or 0) + math.random() * ((opts.hi or 1) - (opts.lo or 0))
-  u = shape(u, d.bias, 1 - (self:mode(slot) == "wide" and 1 or (opts.spread or 0)))
-  local r = lo + u * (hi - lo)
-  return util.round(util.clamp(cur + (r - cur) * opts.amount, d.min, d.max))
+  return util.round(util.clamp(cur + (target - cur) * opts.amount, d.min, d.max))
 end
 
 -- slots: array (may contain false holes), n = its length.
--- opts: {amount, lo, hi, spread, beats, scope,
+-- opts: {amount, lo, hi, spread, tails, beats, scope,
 --        ranges=fn(slot)->{lo,hi}|nil, keep_undo}
 function Core:randomize(slots, n, opts)
   local changes = {}

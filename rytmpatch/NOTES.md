@@ -33,6 +33,16 @@ Started 2026-09-16; not yet run on a device or against a real Rytm.
   within ±16 of centre (was ±64).
   - min/max stays the real CC range, so **nothing is unreachable by hand** —
     taming constrains the dice only.
+  - **Outliers (2026-09-20).** A hard window edge made extremes
+    unreachable by the dice rather than merely rare, which loses the
+    occasional 4-second attack or slammed-shut filter that makes a roll
+    interesting. "outliers" (default 10%) is the per-param chance of
+    ignoring the window and drawing uniformly from outside it. 0% = the
+    strict window.
+  - `hard = "min"/"max"/"both"` exempts a param from outliers on the
+    dangerous side: delay feedback and compressor makeup gain, both
+    hard at the top. It blocks the dice only — "wide" mode and widen
+    range still open those params fully, since both are deliberate.
   - Three opening-up routes, in increasing order of commitment: K3 cycles
     one param tame → wide → locked; PARAMETERS > RANDOMIZE > "widen range"
     (0-100%) blends every window toward its full range at once; and bias

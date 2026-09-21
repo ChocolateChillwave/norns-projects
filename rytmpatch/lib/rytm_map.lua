@@ -243,7 +243,9 @@ Map.fx_pages = {
     d("PING", 17, 0, 1, {labels = {"OFF", "ON"}}),
     d("WIDTH", 18, 0, 127, {centered = true, rmin = 44, rmax = 84}),
     -- runaway feedback is the classic accident here
-    d("FDBK", 19, 0, 127, {rmin = 20, rmax = 85}),
+    -- hard: an outlier roll may go under this window but never over it,
+    -- because the top of delay feedback doesn't decay away on its own
+    d("FDBK", 19, 0, 127, {rmin = 20, rmax = 85, hard = "max"}),
     d("HPF", 20, 0, 127, {rmin = 0, rmax = 50, bias = "low"}),
     d("LPF", 21, 0, 127, {rmin = 70, rmax = 127, bias = "high"}),
     d("REVRB", 22, 0, 127, {rmin = 0, rmax = 70}),
@@ -273,7 +275,7 @@ Map.fx_pages = {
     d("ATK", 79, 0, 6, {discrete = true}),
     d("REL", 80, 0, 7, {discrete = true}),
     -- makeup gain is a volume control wearing a disguise
-    d("GAIN", 81, 0, 127, {rmin = 0, rmax = 40, bias = "low"}),
+    d("GAIN", 81, 0, 127, {rmin = 0, rmax = 40, bias = "low", hard = "max"}),
     d("RATIO", 82, 0, 3, {labels = {"1:2", "1:4", "1:8", "MAX"}}),
     d("SC EQ", 83, 0, 3, {labels = {"OFF", "LPF", "HPF", "HIT"}}),
     d("MIX", 84, 0, 127, {rmin = 0, rmax = 90}),

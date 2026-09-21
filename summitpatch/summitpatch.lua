@@ -25,7 +25,12 @@
 -- never randomized), and
 -- PARAMETERS > RANDOMIZE >
 -- "widen range" opens every
--- window at once.
+-- window at once. "outliers"
+-- (10%) is how often a param
+-- ignores its window entirely,
+-- so a pluck's sustain of 0 or
+-- a slow pad attack still turn
+-- up -- just not every roll.
 --
 -- AFX (last page): play notes
 -- into norns (keyboard or a
@@ -273,6 +278,7 @@ local function rand_opts()
     lo = params:get("rnd_lo") / 100,
     hi = math.max(params:get("rnd_lo"), params:get("rnd_hi")) / 100,
     spread = spread(),
+    tails = params:get("rnd_tails") / 100,
     beats = MORPH_BEATS[params:get("morph")],
     scope = "patch",
     ranges = recipe_ranges(),
@@ -390,12 +396,16 @@ local function add_params()
   params:add_trigger("send_all", "send all to summit")
   params:set_action("send_all", function() if core then send_all(); View.flash("SENT ALL") end end)
 
-  params:add_group("summitpatch_random", "RANDOMIZE", 9)
+  params:add_group("summitpatch_random", "RANDOMIZE", 10)
   params:add_option("recipe", "recipe", Map.recipe_names, 1)
   params:add_number("rnd_amount", "random amount", 0, 100, 100, pct)
   -- 0% = each param's tame window (see lib/summit_map.lua), 100% = its
   -- full CC range, which is what the "chaos" recipe forces
   params:add_number("rnd_spread", "widen range", 0, 100, 0, pct)
+  -- chance per param of ignoring the window and landing outside it: a
+  -- pluck's sustain of 0 or a four-second pad attack stay reachable by
+  -- the dice, they're just not what most rolls give you
+  params:add_number("rnd_tails", "outliers", 0, 100, 10, pct)
   params:add_number("rnd_lo", "range low", 0, 100, 0, pct)
   params:add_number("rnd_hi", "range high", 0, 100, 100, pct)
   params:add_option("morph", "morph time (beats)", MORPH_NAMES, 1)

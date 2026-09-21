@@ -1,187 +1,226 @@
 -- library.lua
 -- the built-in beats, and the default lane layout they assume.
 --
+-- ORGANISED AS KITS. pattern slot N means the same beat on every lane:
+-- row 1 is the amen break across all eight lanes, row 2 is a straight
+-- four-four, and so on. that matters because the thing a drum pattern
+-- actually is -- an amen break, an electro groove -- lives *across* voices,
+-- not in one of them. eight independent per-voice banks can only produce
+-- divisions of the bar, which is exactly how the first version sounded.
+--
+-- three ways to play it follow from that, all from the same data:
+--   launch a whole row (a scene)  -> the real, interlocking beat
+--   launch one cell               -> borrow that lane's part from another
+--                                    kit, over whatever else is playing
+--   let follow actions run        -> individual lanes drift between kits,
+--                                    which is the generative behaviour, but
+--                                    now every destination is a musically
+--                                    coherent part rather than a bar count
+--
 -- patterns are written as one character per step:
 --   X  accent   x  normal   o  ghost   -  rest
--- one string per slot, and a lane's slots are its voices in order (so the
--- CLAP lane's first string is CP and its second is RS). every string here
--- is 16 characters; the length check in the test harness will catch it if
--- one drifts.
+-- one string per voice, in the order that lane lists its voices (so CLAP's
+-- first string is CP and its second RS). a kit that doesn't name a lane
+-- leaves it empty and silent -- that is deliberate, not an omission: the
+-- amen has no cowbell.
 --
--- FOLLOW DEFAULTS are part of the curation, not an afterthought. the
--- rhythm-section lanes (kick, snare, clap, cymbal, cowbell) ship with
--- "end / none", i.e. Ableton's default of staying put until you launch
--- something -- they are the anchor, and a kick that wanders on its own is
--- just noise. the movement is given to the lanes where it is musical: toms
--- step to the next fill every time round, and the two hat lanes take an
--- "other" jump some of the time and otherwise hold. so the script does
--- something generative the moment it starts without the floor moving under
--- you, and every bit of that is editable per pattern.
---
--- a bank slot left empty is deliberate: with a lane's skip_empty set (the
--- default) follow actions step straight over it, so it is a free slot to
--- write your own pattern into without having to first disarm anything.
+-- ACCURACY. the break transcriptions here are written from memory of how
+-- these patterns are usually notated, at 16th resolution. they are meant to
+-- be recognisable and to feel right, not to be exact transfers of a
+-- recording -- the amen in particular is a 4-bar loop with a lot of
+-- micro-timing that a 16th grid cannot hold at all. treat them as a
+-- starting point to edit by ear on the device.
 --
 -- pure Lua, no norns APIs -- testable off-device.
 local Library = {}
 
--- shorthand for the follow spec: {time in 16ths (or -1 for "end"),
--- action A, action B, chance of A}. action numbers index Pattern.ACTIONS:
+-- follow spec: {time in 16ths (or -1 for "end"), action A, action B,
+-- chance of A}. action numbers index Pattern.ACTIONS:
 -- 1 none, 2 next, 3 prev, 4 first, 5 last, 6 any, 7 other, 8 rand2.
 local HOLD = {-1, 1, 1, 100}       -- at the end of the pattern, stay
 local CYCLE = {-1, 2, 1, 100}      -- at the end, step to the next
-local DRIFT_1BAR = {16, 7, 1, 40}  -- every bar, 40% chance of jumping
+local DRIFT_1BAR = {16, 7, 1, 40}  -- every bar, 40% chance of jumping kit
 local DRIFT_2BAR = {32, 7, 1, 50}  -- every two bars, 50% chance
 
+-- lane -> Rytm voices. left as it was 2026-09-20 rather than resplit; the
+-- four toms share lane 4, so they get one pattern bank and one follow
+-- action between them. they are still four separate voices on the wire
+-- (notes 4/5/6/7) -- see NOTES.md, "lane layout".
 Library.LANES = {
+  {name = "KICK",  voices = {1},           follow = HOLD},
+  {name = "SNARE", voices = {2},           follow = HOLD},
+  {name = "CLAP",  voices = {4, 3},        follow = HOLD},       -- CP, RS
+  {name = "TOMS",  voices = {5, 6, 7, 8},  follow = CYCLE},      -- BT LT MT HT
+  {name = "CHH",   voices = {9},           follow = DRIFT_1BAR},
+  {name = "OHH",   voices = {10},          follow = DRIFT_2BAR},
+  {name = "CYM",   voices = {11},          follow = HOLD},
+  {name = "COW",   voices = {12},          follow = HOLD},
+}
 
-  {name = "KICK", voices = {1}, follow = HOLD, patterns = {
-    {"pulse",   {"X-------X-------"}},
-    {"four",    {"X---x---X---x---"}},
-    {"four+e",  {"X---x---X---x--x"}},
-    {"house",   {"X---X---X---X---"}},
-    {"electro", {"X-----x-X---x---"}},
-    {"broken",  {"X--x---X--x-X---"}},
-    {"jungle",  {"X-----X---X-----"}},
-    {"double",  {"X--X----X--X--x-"}},
+-- two-bar kits are written as two 16-character halves joined, so the bar
+-- line stays visible in the source
+local function bars(a, b) return a .. b end
+
+Library.KITS = {
+
+  -- 1 ------------------------------------------------------------ amen
+  -- the break. two bars, because the whole character is that bar two does
+  -- not repeat bar one -- the snare shifts off the backbeat and the kick
+  -- moves late. on a single bar it is just a funk beat.
+  {name = "amen", length = 32, parts = {
+    KICK  = {bars("X---------x-----", "X-----------x---")},
+    SNARE = {bars("----X--o----X---", "----X-----X--X--")},
+    CLAP  = {bars("----------------", "----------------"),      -- CP
+             bars("--o-------o-----", "--o---o---------")},     -- RS ticks
+    TOMS  = {bars("----------------", "----------------"),      -- BT
+             bars("----------------", "----------------"),      -- LT
+             bars("----------------", "---------x------"),      -- MT
+             bars("----------------", "----------------")},     -- HT
+    CHH   = {bars("x-x-x-x-x-x-x-x-", "x-x-x-x-x-x-x-x-")},
+    OHH   = {bars("--------------x-", "------x---------")},
+    CYM   = {bars("X---------------", "----------------")},
   }},
 
-  {name = "SNARE", voices = {2}, follow = HOLD, patterns = {
-    {"backbeat", {"----X-------X---"}},
-    {"ghosted",  {"----X--o----X--o"}},
-    {"push",     {"----X-------X-x-"}},
-    {"halftime", {"------------X---"}},
-    {"breaks",   {"----X--o--X-X---"}},
-    {"rolling",  {"----X-o-o---X-o-"}},
-    {"3-3-2",    {"------X-----X---"}},
-    {"fill",     {"----X-o-X-o-XoXo"}},
+  -- 2 ------------------------------------------------------- four four
+  -- straight techno. no snare at all -- the backbeat is the clap, which is
+  -- what makes it read as techno rather than as rock.
+  {name = "four four", length = 16, parts = {
+    KICK = {"X---X---X---X---"},
+    CLAP = {"----X-------X---",
+            "----------------"},
+    CHH  = {"x-x-x-x-x-x-x-x-"},
+    OHH  = {"--x---x---x---x-"},
   }},
 
-  -- slot 1 = CP (clap), slot 2 = RS (rimshot)
-  {name = "CLAP", voices = {4, 3}, follow = HOLD, patterns = {
-    {"clap",     {"----X-------X---",
-                  "----------------"}},
-    {"clap+rim", {"----X-------X---",
-                  "--x---x---x---x-"}},
-    {"rim 16",   {"----------------",
-                  "--x-x-x-x-x-x-x-"}},
-    {"off rim",  {"------------X---",
-                  "---x---x---x---x"}},
-    {"sparse",   {"------------X---",
-                  "-------x--------"}},
-    {"latin",    {"-----x------x---",
-                  "x--x--x---x--x--"}},
-    {"clave",    {"----------------",
-                  "x--x--x---x-x---"}},
-    {"busy",     {"----X---X---X---",
-                  "-x-x-x-x-x-x-x-x"}},
+  -- 3 ----------------------------------------------------------- think
+  -- the other break everyone samples. busier kick than the amen, ghost
+  -- snares on the back half of each beat.
+  {name = "think", length = 16, parts = {
+    KICK  = {"X-----x---x-----"},
+    SNARE = {"----X--o----X--o"},
+    CLAP  = {"----------------",
+             "--o---o---o---o-"},
+    CHH   = {"x-x-x-x-x-x-x-x-"},
+    OHH   = {"------------x---"},
+    CYM   = {"x-------x-------"},
   }},
 
-  -- slot 1 = BT, 2 = LT, 3 = MT, 4 = HT. the fill lane -- it cycles.
-  {name = "TOMS", voices = {5, 6, 7, 8}, follow = CYCLE, patterns = {
-    {"tap",     {"----------------",
-                 "----------------",
-                 "----------------",
-                 "-------------x--"}},
-    {"descend", {"---------------X",
-                 "--------------x-",
-                 "-------------x--",
-                 "------------x---"}},
-    {"ascend",  {"------------X---",
-                 "-------------x--",
-                 "--------------x-",
-                 "---------------x"}},
-    {"tribal",  {"X-------X-------",
-                 "----x-------x---",
-                 "--x---x---x---x-",
-                 "----------------"}},
-    {"offbeat", {"----------------",
-                 "---x---x---x---x",
-                 "----------------",
-                 "----------------"}},
-    {"march",   {"X---X---X---X---",
-                 "--x---x---x---x-",
-                 "----------------",
-                 "----------------"}},
-    {"fill 8",  {"--------X-------",
-                 "---------x-x----",
-                 "----------x-x-x-",
-                 "-------------x-x"}},
-    {"sparse",  {"----------------",
-                 "----------------",
-                 "-------x--------",
-                 "----------------"}},
+  -- 4 --------------------------------------------------------- electro
+  -- 808 syncopation: the kick carries the groove rather than marking time,
+  -- and the cowbell is doing real work.
+  {name = "electro", length = 16, parts = {
+    KICK  = {"X--X--x---X--x--"},
+    SNARE = {"----X-------X---"},
+    CLAP  = {"------------X---",
+             "--x---x---x---x-"},
+    TOMS  = {"--------x-------",
+             "-------------x--",
+             "----------------",
+             "----------------"},
+    CHH   = {"xoxoxoxoxoxoxoxo"},
+    COW   = {"x-----x-----x---"},
   }},
 
-  {name = "CHH", voices = {9}, follow = DRIFT_1BAR, patterns = {
-    {"8ths",    {"x-x-x-x-x-x-x-x-"}},
-    {"16ths",   {"xoxoxoxoxoxoxoxo"}},
-    {"offbeat", {"--x---x---x---x-"}},
-    {"3-group", {"x--x--x--x--x--x"}},
-    {"sparse",  {"x---x---x---x---"}},
-    {"accents", {"XoxoXoxoXoxoXoxo"}},
-    {"broken",  {"x-xox-x-xoxox-x-"}},
-    {"rolling", {"xxoxxoxxoxxoxxox"}},
+  -- 5 --------------------------------------------------------- rolling
+  -- driving techno. the hat does the work: 16ths with every third one
+  -- ghosted so it pushes instead of sitting flat.
+  {name = "rolling", length = 16, parts = {
+    KICK = {"X---X---X---X---"},
+    CLAP = {"----X-------X---",
+            "----------------"},
+    CHH  = {"xxoxxoxxoxxoxxox"},
+    OHH  = {"--x---x---x---X-"},
+    CYM  = {"x-------x-------"},
   }},
 
-  {name = "OHH", voices = {10}, follow = DRIFT_2BAR, patterns = {
-    {"offbeat", {"--x---x---x---x-"}},
-    {"and 2",   {"--------x-------"}},
-    {"last",    {"--------------x-"}},
-    {"halves",  {"----x-------x---"}},
-    {"pumping", {"--x---x---x---X-"}},
-    {"pair",    {"--x-x-------x---"}},
-    {"long",    {"------------X---"}},
-    {"driving", {"--X---x---X---x-"}},
+  -- 6 ----------------------------------------------------------- funky
+  -- ghost notes are the entire point of this one. play it with the snare's
+  -- level up and you can hear how much of the groove is below the accents.
+  {name = "funky", length = 16, parts = {
+    KICK  = {"X--x-----X-x----"},
+    SNARE = {"----Xo-o-o-oX-o-"},
+    CLAP  = {"----------------",
+             "o---o---o---o---"},
+    CHH   = {"x-x-x-x-x-x-x-x-"},
+    OHH   = {"--------x-------"},
+    CYM   = {"x---x---x---x---"},
   }},
 
-  {name = "CYM", voices = {11}, follow = HOLD, patterns = {
-    {"crash",    {"X---------------"}},
-    {"ride 8",   {"x-x-x-x-x-x-x-x-"}},
-    {"ride off", {"--x---x---x---x-"}},
-    {"accent",   {"X-------x-------"}},
-    {"swell",    {"o-o-o-o-x-x-X-X-"}},
-    {"late",     {"------------X---"}},
-    {"ride 16",  {"xoxoxoxoxoxoxoxo"}},
-    -- slot 8 intentionally empty: a silent slot to launch when you want the
-    -- cymbal out, and one that follow actions skip over on their own
+  -- 7 -------------------------------------------------------- halftime
+  -- two bars of space, with the toms doing a descending fill at the end of
+  -- the second. the one kit here that leans on the TOMS lane.
+  {name = "halftime", length = 32, parts = {
+    KICK  = {bars("X---------------", "------X---------")},
+    SNARE = {bars("------------X---", "------------X---")},
+    TOMS  = {bars("----------------", "----------------"),   -- BT
+             bars("----------------", "--------------x-"),   -- LT
+             bars("----------------", "-------------x--"),   -- MT
+             bars("----------------", "------------x---")},  -- HT
+    CHH   = {bars("x---x---x---x---", "x---x---x---x---")},
+    OHH   = {bars("----------------", "--------------x-")},
+    CYM   = {bars("X---------------", "----------------")},
   }},
 
-  {name = "COW", voices = {12}, follow = HOLD, patterns = {
-    {"clave",  {"x--x--x---x-x---"}},
-    {"4ths",   {"x---x---x---x---"}},
-    {"offs",   {"--x---x---x---x-"}},
-    {"3-3-2",  {"x-----x-----x---"}},
-    {"busy",   {"x-x---x-x-x---x-"}},
-    {"accent", {"X-------X-------"}},
-    {"roll",   {"xoxoxo----------"}},
-    -- slot 8 intentionally empty, as above
+  -- 8 -------------------------------------------------------- hypnotic
+  -- minimal. almost nothing in it, which makes it the useful one to drift
+  -- *into* -- a lane landing here drops out of the way.
+  {name = "hypnotic", length = 16, parts = {
+    KICK = {"X---X---X---X---"},
+    CLAP = {"----------------",
+            "--x---x---x---x-"},
+    TOMS = {"------------x---",
+            "----------------",
+            "----------------",
+            "----------------"},
+    CHH  = {"--x---x---x---x-"},
+    COW  = {"------x---------"},
   }},
 }
 
--- fill a lane's bank from its library entry. patterns the library does not
--- define are left as the empty ones the lane was constructed with.
+-- fill a lane's bank: one pattern per kit, in kit order, so bank slot N is
+-- kit N on every lane.
 function Library.populate(lane, spec, Pattern)
   local f = spec.follow or HOLD
-  for i = 1, #spec.patterns do
-    local entry = spec.patterns[i]
-    local p = Pattern.from_rows(entry[2], entry[1], 16)
-    p.follow.time = f[1]
-    p.follow.a = f[2]
-    p.follow.b = f[3]
-    p.follow.chance = f[4]
-    lane.bank[i] = p
+  for k = 1, #Library.KITS do
+    local kit = Library.KITS[k]
+    local rows = kit.parts[spec.name]
+
+    -- a kit may name fewer rows than the lane has voices (halftime writes
+    -- all four toms, but a kit that only wanted one would not) -- pad, so
+    -- from_rows still produces a pattern with a row per voice for the step
+    -- editor to draw
+    local full = {}
+    for s = 1, lane.slots do
+      full[s] = (rows and rows[s]) or ""
+    end
+
+    local p = Pattern.from_rows(full, kit.name, kit.length)
+
+    if Pattern.is_empty(p) then
+      -- an empty slot means "this voice sits this kit out". it has to stay
+      -- put: with skip_empty on, a relative follow action from a pattern
+      -- that isn't in its own candidate list would jump the lane straight
+      -- back in, and the silence you asked for would last one bar.
+      p.follow.time = -1
+      p.follow.a = 1
+      p.follow.b = 1
+      p.follow.chance = 100
+    else
+      p.follow.time = f[1]
+      p.follow.a = f[2]
+      p.follow.b = f[3]
+      p.follow.chance = f[4]
+    end
+
+    lane.bank[k] = p
   end
-  -- empty slots still need the lane's slot count, so the step editor has
-  -- rows to draw and a later edit writes into the right place
-  for i = #spec.patterns + 1, #lane.bank do
-    local p = Pattern.new(lane.slots, 16, "--")
-    p.follow.time = f[1]
-    p.follow.a = f[2]
-    p.follow.b = f[3]
-    p.follow.chance = f[4]
-    lane.bank[i] = p
-  end
+end
+
+-- kit names, for the scene row and the screen
+function Library.kit_names()
+  local out = {}
+  for i = 1, #Library.KITS do out[i] = Library.KITS[i].name end
+  return out
 end
 
 return Library

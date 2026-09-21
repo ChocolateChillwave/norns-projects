@@ -194,6 +194,44 @@ ok(fxdist.slots[1].rmax <= 50 and fxdist.slots[3].rmax <= 50, "distortion stays 
 ok(fxcomp.slots[4].rmax <= 45, "compressor makeup gain is capped")
 ok(fxcomp.slots[8].lock, "compressor output volume is locked")
 
+---------------------------------------------------------------- outliers
+section("outliers")
+-- the window is where rolls usually land, not a fence: a small share
+-- ignores it so extremes stay reachable
+local atk_slot = slot_of(atk, "tails.atk")
+local topts = {amount = 1, lo = 0, hi = 1, spread = 0, tails = 0.1}
+local outside, slow, N = 0, 0, 4000
+for _ = 1, N do
+  local v = core:roll(atk_slot, topts)
+  if v > atk.rmax then outside = outside + 1 end
+  if v > 90 then slow = slow + 1 end
+end
+local pct = outside / N * 100
+ok(pct > 5 and pct < 16, "about 10% of rolls land outside the window (got "
+   .. string.format("%.1f", pct) .. "%)")
+ok(slow > 0, "a genuinely slow attack is still reachable (" .. slow .. "/" .. N .. ")")
+
+local strict = 0
+for _ = 1, 500 do
+  if core:roll(atk_slot, opts) > atk.rmax then strict = strict + 1 end
+end
+ok(strict == 0, "outliers 0% is the old strict window")
+
+-- the two hazards are capped on the dangerous side only
+local fb = slot_of(Map.fx_pages[1].slots[4], "tails.fb")
+local gain = slot_of(Map.fx_pages[4].slots[4], "tails.gain")
+local over = 0
+for _ = 1, 2000 do
+  if core:roll(fb, {amount = 1, lo = 0, hi = 1, spread = 0, tails = 1}) > fb.desc.rmax then
+    over = over + 1
+  end
+  if core:roll(gain, {amount = 1, lo = 0, hi = 1, spread = 0, tails = 1}) > gain.desc.rmax then
+    over = over + 1
+  end
+end
+ok(over == 0, "delay feedback and makeup gain are never rolled over their cap")
+ok(fb.desc.hard == "max" and gain.desc.hard == "max", "both are marked hard at the top")
+
 ---------------------------------------------------------------- wander
 section("wander stays inside the window")
 local wslots = {}
