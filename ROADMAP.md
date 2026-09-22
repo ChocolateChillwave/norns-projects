@@ -9,7 +9,7 @@ stays the source of truth (see `CLAUDE.md`). What's here is the layer above:
 status, ordering, and the things that belong to no single script. Each entry
 links to the `NOTES.md` section with the reasoning.
 
-Last reconciled against the code: **2026-09-20**.
+Last reconciled against the code: **2026-09-21**.
 
 ## Status
 
@@ -17,11 +17,11 @@ Last reconciled against the code: **2026-09-20**.
 |---|---|---|---|---|
 | [cascade](cascade/NOTES.md) | partly — 2026-09-16, "working fairly well" | 238 | yes | Six batches have landed since that pass, including the whole crow/JF backend. Most-developed script here, and the one whose tested-vs-shipped gap is widest. |
 | [polyphasic](polyphasic/NOTES.md) | yes — 2026-09-15 | **none** | no | Works and has been played. The arc changes of 2026-09-19 are untested and it has no suite to catch regressions. |
-| [segue](segue/NOTES.md) | partly — 2026-09-20, playing |  971 | yes | Being played. MIDI confirmed, library rebuilt around kits, encoder response fixed, PPQN raised to 96 for finer swing. Nothing about the *switch* itself has been judged yet, and CPU is unmeasured at the new clock rate. |
+| [segue](segue/NOTES.md) | yes — v0.8 played 2026-09-21, "good" | 2147 | yes | In regular play. v0.8 added eight genre banks, global→lane→pattern setting inheritance and a redesigned FX grid, and its first session went well. Still unjudged specifically: whether the banks' kits interplay, and CPU at 96 PPQN. |
 | [rytmpatch](rytmpatch/NOTES.md) | no | 1283 | no | Complete but unproven, and its MIDI channel defaults are known-suspect. |
 | [summitpatch](summitpatch/NOTES.md) | no | 541 | no | Complete but unproven; a whole page (STRUCT) rests on unverified NRPN ranges. |
 
-3,060 checks total, all passing — `lua run-tests.lua` from the repo root.
+4,225 checks total, all passing — `lua run-tests.lua` from the repo root.
 
 **The headline:** three of five scripts have never run on the device, and
 the two that have are both now ahead of their last hardware pass. Test

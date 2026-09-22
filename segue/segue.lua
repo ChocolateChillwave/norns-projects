@@ -1,72 +1,29 @@
 -- segue
--- v0.7.0
+-- v0.8.0
 -- follow-action drum sequencer
 -- for the Elektron Analog Rytm
 -- MIDI out only -- see MANUAL.md
 --
--- eight lanes, each one a column of
--- eight patterns with its own
--- playhead, length and follow action.
--- launch a pattern and the lane moves
--- to it; leave it alone and its follow
--- action moves it for you, on its own
--- clock, in the middle of a bar if
--- that is what you asked for.
+-- eight lanes, each a column of
+-- eight kits. launch a kit and the
+-- lane moves to it; leave it alone
+-- and its follow action moves it,
+-- on its own clock, mid-bar if you
+-- asked for that.
 --
--- the point is the switch itself:
---   cut       restart from step 1
---   legato    carry the playhead over,
---             so the beat continues
---             rather than restarting
---   xfade     blend the two patterns
---             over a window
---   handover  voices change one at a
---             time, anchor voice last
+-- eight banks of eight kits:
+-- generic house techno electro
+-- breakbeats variety variety-2 user
 --
--- LAUNCH grid (8x8):
---   columns are lanes, rows are the
---   eight pattern slots. press to
---   launch -- it lands on the next
---   quantize boundary. the lit cell
---   fades as its loop plays out.
+-- settings default to GLOBAL; any
+-- lane or kit can override its own.
 --
--- FX grid (right half of a 128, a
--- second grid, or hold K1 on a 64):
---   1 beat repeat (hold)
---   2 scenes
---   3 lane mute
---   4 lane solo (hold)
---   5 lane follow on/off
---   6 lane roll (hold)
---   7 transition / quant / morph
---   8 play, reseed, follow all, store
---     scene (hold), panic, step edit
+-- LAUNCH grid: lanes across, kits
+-- down. FX grid: see MANUAL.md.
 --
--- step edit (FX row 8 col 6) turns the
--- LAUNCH grid into a step editor for
--- the selected pattern: rows are that
--- lane's voices, columns eight steps,
--- row 7 pages, row 8 exits / clears.
--- press a step repeatedly to cycle
--- rest / normal / accent / ghost.
---
--- arc (its own button changes page):
---   PLAY   division / swing /
---          probability / level
---   MORPH  transition / morph steps /
---          launch quant / lane
---
--- E1 lane   E2 slot   E3 edit
+-- E1 lane   E2 kit   E3 edit
 -- K1 shift (+E3 picks the field)
 -- K2 launch   K3 play/stop
---
--- the last field is `scope`: it widens
--- a follow edit to the whole lane, the
--- whole kit (that slot on every lane)
--- or everything. shown in brackets on
--- the field line while it is armed.
--- holding K1 over an arc ring applies
--- the turn to every lane.
 
 local Pattern = include("segue/lib/pattern")
 local Lane = include("segue/lib/lane")
@@ -97,11 +54,14 @@ local redraw_id
 
 local sel_lane = 1
 local sel_slot = 1
-local field = 1
 local shift = false
 
-local scenes = {}
-local scene_arm = false
+-- banks. `current_bank` is what the lanes hold; `bank_target` is a switch
+-- waiting on its quantize boundary (nil when none is pending).
+local current_bank = 1
+local bank_target = nil
+local user_bank = {}      -- [lane] = that lane's eight user patterns
+
 local solo = {}
 local any_solo = false
 
@@ -113,6 +73,7 @@ local rep_recording = false
 local rep_buf = {}
 
 local screen_dirty = true
+local notice, notice_at = nil, -math.huge -- a one-off message for the footer
 
 -- input deserves an answer now, not on the next animation frame. the redraw
 -- loop runs at 15fps, which is plenty for the playheads but means a turn of
@@ -121,8 +82,10 @@ local screen_dirty = true
 -- again before the first change appears and then it jumps two.
 --
 -- so input redraws straight from the handler, rate-limited to 30fps so a
--- fast spin cannot flood the screen. CLAUDE.md's rule is against redraws
--- from handlers *that cause rapid re-draws*, which the limiter prevents.
+-- fast spin cannot flood the screen. CONVENTIONS §8 says handlers only set
+-- a dirty flag; this is a deliberate exception, recorded in NOTES.md, made
+-- after it was felt on hardware -- the rule's concern is rapid redraws,
+-- which the limiter is there to prevent.
 local INPUT_FPS = 30
 local last_input_draw = 0
 
@@ -134,6 +97,12 @@ local function touch()
     redraw()
     screen_dirty = false
   end
+end
+
+local function say(msg)
+  notice = msg
+  notice_at = util.time()
+  screen_dirty = true
 end
 
 -- forward declaration: the transport starts the clock coroutine, which
@@ -148,7 +117,6 @@ local function pround(id) return util.round(params:get(id)) end
 -- norns streams the MIDI clock itself (PARAMETERS > CLOCK > "midi out",
 -- per port) -- all a script has to add is start/stop, so an external box
 -- follows this script's transport rather than free-running on the ticks.
--- same approach as polyphasic.
 local function send_transport(msg)
   for i = 1, 16 do
     if params:get("clock_midi_out_" .. i) == 1 then
@@ -158,54 +126,49 @@ local function send_transport(msg)
 end
 
 -- TICKS COME FROM THE SHARED TIMELINE, not from a counter of our own.
---
 -- the first version set tick = 0 at the moment you pressed play and then
--- incremented. that meant every bar line, every launch-quantize boundary
--- and every swing parity was measured from *when you happened to start* --
--- so under Link the script ran at the right tempo while sitting at an
--- arbitrary phase against everyone else, and the only way to land on the
--- beat was to press play at exactly the right instant. hence "I have to
--- try a couple of times."
---
--- deriving the tick from clock.get_beats() instead makes the grid a
--- property of the clock rather than of the keypress, so it lands right
--- however late you hit it. it is also self-correcting: a missed or late
--- wakeup cannot accumulate drift the way an incrementing counter can.
+-- incremented, so every bar line and quantize boundary was measured from
+-- *when you happened to start* -- under Link, the right tempo at an
+-- arbitrary phase. deriving the tick from clock.get_beats() makes the grid
+-- a property of the clock rather than of the keypress, and it is
+-- self-correcting: a late wakeup cannot accumulate drift.
 local tick_origin = 0
 
--- the shared timeline's tick, before any origin is subtracted
 local function raw_tick()
   return math.floor(clock.get_beats() * Lane.PPQN + 0.5)
 end
 
 local function global_tick() return raw_tick() - tick_origin end
 
--- whether the clock is ours alone or shared with something else. when it is
--- shared, the pattern grid locks to the shared timeline (origin 0) so all
--- peers agree where the bar is. on the internal clock there is nobody to
--- agree with, and starting a pattern from step 1 where you pressed play is
--- what you would expect, so the origin moves to now.
+-- on a shared clock (Link, MIDI) the grid locks to the shared timeline so
+-- every peer agrees where the bar is. on the internal clock there is nobody
+-- to agree with, so the pattern starts at step 1 where you pressed play.
 local function clock_is_shared()
   local okc, src = pcall(function() return params:get("clock_source") end)
   return okc and src ~= nil and src > 1
 end
 
--- on the internal clock the origin cannot be set here: clock.sync waits for
--- the *next* subdivision, so by the time the first tick is processed the
--- moment of the keypress has already gone by. setting the origin from the
--- first tick that actually runs is what makes "press play, hear step 1"
--- exact rather than one step out.
+-- the internal-clock origin is taken from the first tick that actually
+-- runs: clock.sync waits for the next subdivision, so by then the moment
+-- of the keypress has passed, and setting it earlier lands one step out.
 local pending_origin = false
 
 local function all_reset()
   if clock_is_shared() then
     tick_origin = 0
     pending_origin = false
+    tick = global_tick() - 1
   else
+    -- -1, exactly what the first tick will set it to once it takes the
+    -- origin. computing it from global_tick() here used the PREVIOUS run's
+    -- origin, so anything that read `tick` between pressing play and the
+    -- first tick -- a beat repeat pressed on the downbeat, say -- captured
+    -- a number from the old timeline and ran misaligned for the whole hold.
     pending_origin = true
+    tick = -1
   end
-  tick = global_tick() - 1
   for i = 1, NUM_LANES do lanes[i]:reset() end
+  bank_target = nil
 end
 
 local function stop_playing()
@@ -250,12 +213,10 @@ end
 local out_buf = {}
 for i = 1, 32 do out_buf[i] = {voice = 0, vel = 0} end
 
--- one bucket per tick of the capture window. at 96 PPQN a half-bar window
--- is 192 buckets, so the per-bucket hit tables are created only when a tick
--- actually records something -- preallocating 192 x 24 of them up front
--- would be several thousand tables for a buffer that is mostly silence.
--- once created they are reused, so the steady state still allocates
--- nothing.
+-- one bucket per tick of the capture window. the per-bucket hit tables are
+-- created only when a tick actually records something -- at 96 PPQN a
+-- half-bar window is 192 buckets, mostly silence -- and reused after that,
+-- so the steady state allocates nothing.
 local function rep_slot(offset)
   local s = rep_buf[offset]
   if s == nil then
@@ -312,6 +273,20 @@ do_tick = function()
     end
   end
 
+  -- a bank switch has landed once every lane has swapped; only then does
+  -- the current bank change (see select_bank)
+  if bank_target then
+    local waiting = false
+    for i = 1, NUM_LANES do
+      if lanes[i].pending_bank then waiting = true end
+    end
+    if not waiting then
+      current_bank = bank_target
+      bank_target = nil
+      switched = true
+    end
+  end
+
   -- beat repeat. the first pass through the window records what the lanes
   -- would have played and passes it through; after that the lanes keep
   -- running (so the timeline underneath is still correct when the button is
@@ -349,51 +324,213 @@ do_tick = function()
     voices_out:trig(v, out_buf[i].vel)
   end
 
-  -- `tick` is set by the clock loop from the shared timeline, not counted
-  -- here -- see the note above all_reset()
   if switched or n_out > 0 then screen_dirty = true end
 end
 
----------------------------------------------------------------- lanes
+---------------------------------------------------------------- inheritance
 
 local function lane_param(i, name) return "lane_" .. i .. "_" .. name end
 
+-- EVERY INHERITABLE SETTING, and where each level of it lives.
+--
+--   global   a param everything falls back to
+--   lane     a per-lane param, whose lowest value is the "inherit" sentinel
+--   pattern  pattern.ov[key], absent meaning inherit (lane.lua)
+--
+-- the sentinel sits at the BOTTOM of each lane param's range, so turning a
+-- lane value down past its lowest real setting lands on "global" -- the
+-- same gesture as clearing a pattern override. `lane = nil` means there is
+-- no lane level (quantize is global or per pattern, as in Ableton).
+--
+-- the global and lane levels are params, not data, because that is what
+-- gets them the PARAMS menu, psets and the arc for free (CONVENTIONS §5).
+-- the pattern level cannot be: 64 patterns x 6 keys would bury the menu.
+local INHERIT = {
+  follow_time   = {lane = "ftime",   global = "follow_time",   inherit = 0},
+  follow_a      = {lane = "fa",      global = "follow_a",      inherit = 0},
+  follow_b      = {lane = "fb",      global = "follow_b",      inherit = 0},
+  follow_chance = {lane = "fchance", global = "follow_chance", inherit = -5},
+  trans         = {lane = "trans",   global = "transition",    inherit = 0},
+  quant         = {                  global = "launch_quant"},
+  div           = {lane = "div",     global = "division",      inherit = 0},
+  swing         = {lane = "swing",   global = "swing",         inherit = -1},
+  morph         = {lane = "morph",   global = "morph_steps",   inherit = 0},
+}
+
+-- the lane's own value for `key`, or nil if the lane inherits
+local function lane_value(i, key)
+  local spec = INHERIT[key]
+  if spec.lane == nil then return nil end
+  local v = util.round(params:get(lane_param(i, spec.lane)))
+  if v == spec.inherit then return nil end
+  return v
+end
+
+local function global_value(key) return util.round(params:get(INHERIT[key].global)) end
+
+-- what lane i resolves `key` to before any pattern override
+local function parent_value(i, key)
+  local v = lane_value(i, key)
+  if v ~= nil then return v end
+  return global_value(key)
+end
+
+-- division, swing and morph are read every tick, so they are resolved into
+-- plain lane fields here -- whenever the lane or the global value moves --
+-- rather than looked up on the 96 PPQN hot path. the pattern-level
+-- settings resolve lazily through Lane:setting, since they are only read
+-- when something actually changes.
 local function sync_lane_from_params(i)
   local l = lanes[i]
-  l.div = pround(lane_param(i, "div"))
-  l.swing = pround(lane_param(i, "swing"))
+  if l == nil then return end
+  l.div = parent_value(i, "div")
+  l.swing = parent_value(i, "swing")
+  l.morph_steps = parent_value(i, "morph")
   l.prob = params:get(lane_param(i, "prob"))
   l.level = params:get(lane_param(i, "level"))
   l.mute = params:get(lane_param(i, "mute")) > 0.5
   l.follow_on = params:get(lane_param(i, "follow")) > 0.5
-  l.transition = pround(lane_param(i, "trans"))
-  l.morph_steps = pround(lane_param(i, "morph"))
 end
 
-local LANE_SETTINGS = {"div", "swing", "prob", "level", "mute", "follow",
-                       "trans", "morph"}
+local function sync_all_lanes()
+  for i = 1, NUM_LANES do sync_lane_from_params(i) end
+end
 
--- back to the shipped state: the factory kits, default scenes, and every
--- lane setting at its param default. the autosave means pattern edits
--- otherwise survive a power cycle indefinitely, which is usually what you
--- want and occasionally exactly what you don't.
-local function reset_to_defaults()
+---------------------------------------------------------------- banks
+
+local function bank_is_user(b) return b == Library.USER end
+
+-- lane i's column for bank b. a FACTORY column is a fresh copy every time,
+-- which is what makes the factory banks read-only: edits land on the copy
+-- and are gone when you leave the bank. the USER column is the saved table
+-- itself, shared rather than copied, so edits made while on it are kept.
+local function bank_column(b, i)
+  if bank_is_user(b) then return user_bank[i] end
+  local spec = Library.LANES[i]
+  return Library.column(b, spec, #spec.voices, Pattern)
+end
+
+local function empty_user_column(i)
+  local spec = Library.LANES[i]
+  local col = {}
+  for k = 1, Lane.PATTERN_COUNT do
+    local p = Pattern.new(#spec.voices, 16, "--")
+    p.ov.follow_a = Pattern.ACTION_NONE -- empty sits out, as in library.lua
+    col[k] = p
+  end
+  return col
+end
+
+-- swap every lane's bank right now. used when stopped, and at init
+local function load_bank_now(b)
+  current_bank = b
+  bank_target = nil
   for i = 1, NUM_LANES do
-    Library.populate(lanes[i], Library.LANES[i], Pattern)
-    lanes[i].active = 1
-    lanes[i]:reset()
-    for _, f in ipairs(LANE_SETTINGS) do
+    local l = lanes[i]
+    l.bank = bank_column(b, i)
+    l.pending_bank = nil
+    l.morph_left = 0
+    l.morph_from = nil
+  end
+  screen_dirty = true
+end
+
+-- the switch you make while playing: every lane queues the new bank for
+-- the next launch-quantize boundary and hands off on its own transition,
+-- keeping its slot. under legato the playhead carries across, so changing
+-- bank is just another of the script's smooth switches.
+--
+-- `current_bank` changes only when the swap LANDS (see do_tick), not when
+-- it is asked for: until the boundary the lanes are still playing the old
+-- bank, and the screen should say so rather than name a bank whose kits
+-- are not on the grid yet.
+local function cancel_bank_switch()
+  bank_target = nil
+  for i = 1, NUM_LANES do
+    lanes[i].pending_bank = nil
+    lanes[i].pending_bank_quant = nil
+  end
+  screen_dirty = true
+end
+
+local function select_bank(b)
+  if not playing then
+    load_bank_now(b)
+    return
+  end
+  if b == current_bank then
+    -- choosing the bank you are already on cancels a pending switch
+    if bank_target ~= nil then cancel_bank_switch() end
+    return
+  end
+  bank_target = b
+  local q = pround("launch_quant")
+  for i = 1, NUM_LANES do lanes[i]:queue_bank(bank_column(b, i), q) end
+  screen_dirty = true
+end
+
+local function user_slot_empty(k)
+  for i = 1, NUM_LANES do
+    if not Pattern.is_empty(user_bank[i][k]) then return false end
+  end
+  return true
+end
+
+-- capture what is PLAYING -- each lane's current pattern, from whatever
+-- bank and kit it is on -- into the first empty user slot. this does the
+-- job "store scene" used to (keep a combination you like), except that it
+-- is saved and becomes a real kit you can launch, edit and follow. it is
+-- also the only way to keep an edit made on a factory bank.
+local function copy_to_user()
+  local slot = nil
+  for k = 1, Lane.PATTERN_COUNT do
+    if user_slot_empty(k) then slot = k break end
+  end
+  local overwrote = slot == nil
+  slot = slot or sel_slot
+  for i = 1, NUM_LANES do
+    -- a copy, never the pattern itself: on a factory bank that pattern is a
+    -- throwaway, and on the user bank the lane holds user_bank[i] directly,
+    -- so this write also shows up on the grid straight away
+    user_bank[i][slot] = Pattern.copy(lanes[i]:pattern())
+  end
+  say((overwrote and "replaced user " or "copied to user ") .. slot)
+  return slot
+end
+
+---------------------------------------------------------------- lane ops
+
+-- back to the shipped state: bank 1, every setting at its default. the
+-- user bank is left alone -- it is your work, and "reset" is for getting
+-- out of a corner, not for losing things (there is a separate trigger for
+-- clearing it).
+local function reset_to_defaults()
+  local ids = {"division", "swing", "morph_steps", "transition",
+               "launch_quant", "follow_time", "follow_a", "follow_b",
+               "follow_chance"}
+  for _, id in ipairs(ids) do
+    params:set(id, params:lookup_param(id).controlspec.default)
+  end
+  for i = 1, NUM_LANES do
+    for _, f in ipairs({"div", "swing", "prob", "level", "mute", "follow",
+                        "trans", "morph", "ftime", "fa", "fb", "fchance"}) do
       local id = lane_param(i, f)
       params:set(id, params:lookup_param(id).controlspec.default)
     end
   end
-  scenes = {}
-  for i = 1, 8 do
-    local s = {}
-    for j = 1, NUM_LANES do s[j] = i end
-    scenes[i] = s
+  params:set("bank", 1, true) -- silent: load_bank_now below does the work
+  load_bank_now(1)
+  for i = 1, NUM_LANES do
+    lanes[i].active = 1
+    lanes[i]:reset()
   end
-  screen_dirty = true
+  say("reset to factory")
+end
+
+local function clear_user_bank()
+  for i = 1, NUM_LANES do user_bank[i] = empty_user_column(i) end
+  if bank_is_user(current_bank) then load_bank_now(current_bank) end
+  say("user bank cleared")
 end
 
 local function reseed()
@@ -407,23 +544,24 @@ local function reseed()
   screen_dirty = true
 end
 
-local function scene_launch(n)
-  local s = scenes[n]
-  if s == nil then return end
+-- launch kit k of the current bank on every lane: one press for a whole
+-- row of the launch grid
+local function kit_launch(k)
   for i = 1, NUM_LANES do
-    if s[i] then
-      if playing then lanes[i]:launch(s[i])
-      else lanes[i]:commit(s[i], Lane.TRANS_CUT) end
-    end
+    if playing then lanes[i]:launch(k)
+    else lanes[i]:commit(k, Lane.TRANS_CUT) end
   end
   screen_dirty = true
 end
 
-local function scene_store(n)
-  local s = {}
-  for i = 1, NUM_LANES do s[i] = lanes[i].active end
-  scenes[n] = s
-  screen_dirty = true
+local function follow_all()
+  local anyoff = false
+  for i = 1, NUM_LANES do
+    if params:get(lane_param(i, "follow")) < 0.5 then anyoff = true end
+  end
+  for i = 1, NUM_LANES do
+    params:set(lane_param(i, "follow"), anyoff and 1 or 0)
+  end
 end
 
 ---------------------------------------------------------------- grid: edit
@@ -519,12 +657,26 @@ local function launch_level(lane, slot)
 end
 
 ---------------------------------------------------------------- grid: fx
+--
+--   row 1  BEAT REPEAT  hold a division                     (focus: hidden)
+--   row 2  KITS         launch kit N on every lane
+--   row 3  MUTE         per lane, toggle
+--   row 4  SOLO         per lane, hold                      (focus: hidden)
+--   row 5  FOLLOW       per lane, toggle
+--   row 6  ROLL         per lane, hold                      (focus: hidden)
+--   row 7  cols 1-4 GLOBAL transition | 5 play | 6 step edit |
+--          7 copy playing kit to user | 8 follow all on/off
+--   row 8  BANKS        generic house techno electro breaks var var2 user
+--
+-- redesigned 2026-09-21. what left the grid, and why: quantize and morph
+-- up/down buttons (no feedback -- you could not tell what you had set
+-- without reading the screen; they are screen fields and arc rings now),
+-- panic (K1+K3 and PARAMS), reseed (PARAMS), and "store scene", which
+-- "copy to user" supersedes -- a stored combination that is saved and
+-- becomes a real kit, instead of one that evaporated.
 
--- FOCUS mode hides the performance layer so the parts still being proven --
--- the follow engine and the kit library -- are what you are actually
--- playing with. nothing is removed, just made dark and inert: rows 1 (beat
--- repeat), 4 (solo) and 6 (roll) are the three that are pure performance
--- and answer no question about whether a switch sounds right.
+-- FOCUS mode hides the performance layer so the parts still being proven
+-- are what you are playing with. nothing is removed, just dark and inert.
 local FOCUS_HIDDEN_ROWS = {[1] = true, [4] = true, [6] = true}
 
 local function row_hidden(row)
@@ -539,10 +691,8 @@ local function fx_press(col, row, z)
     if on then rep_engage(col)
     elseif rep_col == col then rep_release() end
 
-  elseif row == 2 then                          -- scenes
-    if on then
-      if scene_arm then scene_store(col) else scene_launch(col) end
-    end
+  elseif row == 2 then                          -- launch kit N
+    if on then kit_launch(col) end
 
   elseif row == 3 then                          -- lane mute
     if on then
@@ -565,36 +715,19 @@ local function fx_press(col, row, z)
 
   elseif row == 7 then
     if not on then return end
-    if col <= 4 then                            -- transition, all lanes
+    if col <= 4 then
+      -- the GLOBAL transition: every lane still set to inherit follows it,
+      -- any lane or kit with its own override keeps that
       params:set("transition", col)
-    elseif col == 5 then params:delta("launch_quant", -1)
-    elseif col == 6 then params:delta("launch_quant", 1)
-    elseif col == 7 then params:delta("morph_steps", -1)
-    elseif col == 8 then params:delta("morph_steps", 1) end
-
-  elseif row == 8 then
-    if col == 4 then                            -- store-scene modifier
-      scene_arm = on
-      return
-    end
-    if not on then return end
-    if col == 1 then toggle_play()
-    elseif col == 2 then reseed()
-    elseif col == 3 then
-      -- flip every lane's follow at once
-      local anyoff = false
-      for i = 1, NUM_LANES do
-        if params:get(lane_param(i, "follow")) < 0.5 then anyoff = true end
-      end
-      for i = 1, NUM_LANES do
-        params:set(lane_param(i, "follow"), anyoff and 1 or 0)
-      end
-    elseif col == 5 then
-      voices_out:panic()
+    elseif col == 5 then toggle_play()
     elseif col == 6 then
       edit_mode = not edit_mode
       edit_page = 0
-    end
+    elseif col == 7 then copy_to_user()
+    elseif col == 8 then follow_all() end
+
+  elseif row == 8 then                          -- banks
+    if on then params:set("bank", col) end
   end
   touch()
 end
@@ -603,11 +736,17 @@ local function fx_level(col, row)
   if row_hidden(row) then return 0 end
   local blink = math.floor(tick / 4) % 2 == 0
   if row == 1 then
-    if rep_col == col then return 15 end
-    return 3
+    return rep_col == col and 15 or 3
   elseif row == 2 then
-    if scene_arm then return blink and 10 or 3 end
-    return scenes[col] and 5 or 1
+    -- how many lanes are on this kit right now
+    local on = 0
+    for i = 1, NUM_LANES do
+      if lanes[i].active == col then on = on + 1 end
+    end
+    if on == NUM_LANES then return 12 end
+    if on > 0 then return 6 end
+    if bank_is_user(current_bank) and user_slot_empty(col) then return 1 end
+    return 2
   elseif row == 3 then
     return params:get(lane_param(col, "mute")) > 0.5 and 12 or 2
   elseif row == 4 then
@@ -618,199 +757,210 @@ local function fx_level(col, row)
     return lanes[col].boost and 15 or 2
   elseif row == 7 then
     if col <= 4 then return pround("transition") == col and 13 or 3 end
-    return 4
-  elseif row == 8 then
-    if col == 1 then return playing and (blink and 15 or 8) or 3 end
-    if col == 4 then return scene_arm and 15 or 3 end
+    if col == 5 then return playing and (blink and 15 or 8) or 3 end
     if col == 6 then return edit_mode and 15 or 3 end
-    if col == 2 or col == 3 or col == 5 then return 3 end
-    return 0
+    if col == 7 then return 4 end
+    if col == 8 then
+      for i = 1, NUM_LANES do
+        if params:get(lane_param(i, "follow")) < 0.5 then return 3 end
+      end
+      return 9
+    end
+  elseif row == 8 then
+    if bank_target == col then return blink and 15 or 4 end
+    if current_bank == col then return bank_target and 8 or 15 end
+    return 3
   end
   return 0
 end
 
----------------------------------------------------------------- screen fields
+---------------------------------------------------------------- edit levels
 
--- the strip E3 edits, cycled with K1+E3. pattern-level fields act on the
--- selected slot; lane-level fields go through params, so the arc and psets
--- stay in step with them.
-local FIELDS = {}
+-- WHERE AN EDIT LANDS. the screen edits one level of the inheritance chain
+-- at a time, and GLOBAL is the default -- change a setting there and every
+-- lane and kit that has not been given its own value follows. step down a
+-- level to give one lane, one kit (that slot on every lane) or one pattern
+-- a value of its own. the lowest value at the lane and pattern levels is
+-- "inherit", so clearing an override is the same gesture as turning it
+-- down past its lowest setting.
+local L_GLOBAL, L_LANE, L_KIT, L_PATTERN = 1, 2, 3, 4
+local LEVEL_NAMES = {"global", "lane", "kit", "pattern"}
+local LEVEL_TAGS = {"glb", "lane", "kit", "pat"}
+local edit_level_ = L_GLOBAL
 
 local function sel_pattern() return lanes[sel_lane].bank[sel_slot] end
 
--- EDIT SCOPE. follow settings live per pattern, which means 64 of them, and
--- setting up a scheme one at a time is 4 fields x 64 trips. scope widens
--- what a follow edit writes to. it is shown on the field line whenever it is
--- set to anything but `pattern`, because a silent mass edit would be a
--- nasty surprise.
---
--- a bulk edit ASSIGNS rather than nudges: the new value is worked out from
--- the pattern on screen and then written to everything in scope, so they all
--- end up the same and the displayed value is the truth. (the arc's K1
--- broadcast is the other way round -- it deltas each lane independently,
--- keeping their differences. that is garc's behaviour and it is the right
--- one for a performance nudge; this is a settings edit.)
-local SCOPE_PATTERN, SCOPE_LANE, SCOPE_KIT, SCOPE_ALL = 1, 2, 3, 4
-local SCOPE_NAMES = {"pattern", "lane", "kit", "all"}
-local scope = SCOPE_PATTERN
+-- the value range a pattern override may take, per key. the lane params
+-- carry the same ranges plus their sentinel below.
+local RANGE = {
+  follow_time   = {1, #Pattern.FOLLOW_TIMES, 1},
+  follow_a      = {1, #Pattern.ACTIONS, 1},
+  follow_b      = {1, #Pattern.ACTIONS, 1},
+  follow_chance = {0, 100, 5},
+  trans         = {1, #Lane.TRANS_NAMES, 1},
+  quant         = {1, #Lane.QUANT_NAMES, 1},
+}
 
-local _scope_buf = {}
+local FMT = {
+  follow_time   = function(v) return Pattern.FOLLOW_NAMES[v] or "?" end,
+  follow_a      = function(v) return Pattern.ACTIONS[v] or "?" end,
+  follow_b      = function(v) return Pattern.ACTIONS[v] or "?" end,
+  follow_chance = function(v) return v .. "%" end,
+  trans         = function(v) return Lane.TRANS_NAMES[v] or "?" end,
+  quant         = function(v) return Lane.QUANT_NAMES[v] or "?" end,
+  div           = function(v) return Lane.DIV_NAMES[v] or "?" end,
+  swing         = function(v) return v == 0 and "straight" or (v .. "%") end,
+  morph         = function(v) return v .. " st" end,
+}
 
--- the patterns a follow edit touches right now
-local function scoped_patterns()
-  local n = 0
-  if scope == SCOPE_PATTERN then
-    n = 1
-    _scope_buf[1] = sel_pattern()
-  elseif scope == SCOPE_LANE then
-    for s = 1, Lane.PATTERN_COUNT do
-      n = n + 1
-      _scope_buf[n] = lanes[sel_lane].bank[s]
-    end
-  elseif scope == SCOPE_KIT then
-    for i = 1, NUM_LANES do
-      n = n + 1
-      _scope_buf[n] = lanes[i].bank[sel_slot]
-    end
-  else
-    for i = 1, NUM_LANES do
-      for s = 1, Lane.PATTERN_COUNT do
-        n = n + 1
-        _scope_buf[n] = lanes[i].bank[s]
-      end
-    end
+-- the next override value for pattern p after a turn of d. from "inherit",
+-- turning up MATERIALISES the value you are already hearing, so the first
+-- click changes the marker (inherited -> set here) and not the sound;
+-- turning down past the bottom of the range goes back to inherit.
+local function next_override(p, key, d, lane_i)
+  local r = RANGE[key]
+  local cur = p.ov[key]
+  if cur == nil then
+    if d > 0 then return parent_value(lane_i, key) end
+    return nil
   end
-  return n
+  local nxt = cur + d * r[3]
+  if nxt < r[1] then return nil end
+  if nxt > r[2] then nxt = r[2] end
+  return nxt
 end
 
--- write one follow field across the current scope
-local function set_follow(key, value)
-  local n = scoped_patterns()
-  for i = 1, n do _scope_buf[i].follow[key] = value end
+-- an inheritable field: shows the value at the current edit level, and
+-- whether that value is set here or inherited from further up
+local function inh_field(name, key)
+  return {name = name, key = key,
+    show = function()
+      local v, inherited
+      if edit_level_ == L_GLOBAL then
+        v, inherited = global_value(key), false
+      elseif edit_level_ == L_LANE then
+        local lv = lane_value(sel_lane, key)
+        if lv ~= nil then v, inherited = lv, false
+        else v, inherited = global_value(key), true end
+      else
+        local p = sel_pattern()
+        if p.ov[key] ~= nil then v, inherited = p.ov[key], false
+        else v, inherited = parent_value(sel_lane, key), true end
+      end
+      return FMT[key](v), inherited
+    end,
+    delta = function(d)
+      local spec = INHERIT[key]
+      if edit_level_ == L_GLOBAL then
+        params:delta(spec.global, d)
+      elseif edit_level_ == L_LANE then
+        local id = lane_param(sel_lane, spec.lane)
+        if util.round(params:get(id)) == spec.inherit and d > 0 then
+          params:set(id, global_value(key)) -- materialise, as above
+        else
+          params:delta(id, d)
+        end
+      elseif edit_level_ == L_PATTERN then
+        local p = sel_pattern()
+        p.ov[key] = next_override(p, key, d, sel_lane)
+      else -- L_KIT: the same value written to this slot on every lane
+        local nv = next_override(sel_pattern(), key, d, sel_lane)
+        for i = 1, NUM_LANES do
+          local p = lanes[i].bank[sel_slot]
+          -- an empty pattern's "none" is what keeps a sat-out voice
+          -- silent; a kit-wide edit must not overwrite it
+          if not Pattern.is_empty(p) then p.ov[key] = nv end
+        end
+      end
+    end}
 end
 
-local function follow_time_index(v)
-  for i, t in ipairs(Pattern.FOLLOW_TIMES) do if t == v then return i end end
-  return #Pattern.FOLLOW_TIMES
+-- a plain per-lane param, not inherited
+local function lane_plain(name, suffix)
+  return {name = name,
+    show = function() return params:string(lane_param(sel_lane, suffix)), false end,
+    delta = function(d) params:delta(lane_param(sel_lane, suffix), d) end}
 end
 
--- the four follow fields honour the edit scope above
-FIELDS[1] = {
-  name = "follow", bulk = true,
-  show = function()
-    return Pattern.FOLLOW_NAMES[follow_time_index(sel_pattern().follow.time)]
-  end,
-  delta = function(d)
-    local i = util.clamp(follow_time_index(sel_pattern().follow.time) + d,
-                         1, #Pattern.FOLLOW_TIMES)
-    set_follow("time", Pattern.FOLLOW_TIMES[i])
-  end}
+local FIELDS = {
+  follow   = inh_field("follow", "follow_time"),
+  action_a = inh_field("action A", "follow_a"),
+  action_b = inh_field("action B", "follow_b"),
+  chance   = inh_field("chance", "follow_chance"),
+  trans    = inh_field("transition", "trans"),
+  quant    = inh_field("quant", "quant"),
+  div      = inh_field("division", "div"),
+  swing    = inh_field("swing", "swing"),
+  morph    = inh_field("morph", "morph"),
+  velocity = lane_plain("velocity", "level"),
+  prob     = lane_plain("chance/trig", "prob"),
+  length   = {name = "length",
+    show = function() return sel_pattern().length .. " st", false end,
+    delta = function(d)
+      local p = sel_pattern()
+      p.length = util.clamp(p.length + d, 1, 64)
+    end},
+  level    = {name = "level",
+    show = function() return LEVEL_NAMES[edit_level_], false end,
+    delta = function(d) edit_level_ = util.clamp(edit_level_ + d, 1, 4) end},
+}
 
-FIELDS[2] = {
-  name = "action A", bulk = true,
-  show = function() return Pattern.ACTIONS[sel_pattern().follow.a] end,
-  delta = function(d)
-    set_follow("a", util.clamp(sel_pattern().follow.a + d, 1, #Pattern.ACTIONS))
-  end}
+-- which fields each level can edit. a setting with no lane level (quant)
+-- or no pattern level (division, swing, morph) simply does not appear
+-- where it would mean nothing. `level` is last in every list so the field
+-- E3 lands on by default is a value, not the level selector.
+local LEVEL_FIELDS = {
+  [L_GLOBAL]  = {"follow", "action_a", "action_b", "chance", "trans", "quant",
+                 "div", "swing", "morph", "level"},
+  [L_LANE]    = {"follow", "action_a", "action_b", "chance", "trans",
+                 "div", "swing", "morph", "velocity", "prob", "level"},
+  [L_KIT]     = {"follow", "action_a", "action_b", "chance", "trans", "quant",
+                 "level"},
+  [L_PATTERN] = {"follow", "action_a", "action_b", "chance", "trans", "quant",
+                 "length", "level"},
+}
+-- focus mode trims the fields that answer no question about the follow
+-- engine: the per-lane mix and the pattern length (a kit sets it)
+local FOCUS_DROP = {velocity = true, prob = true, length = true}
 
-FIELDS[3] = {
-  name = "action B", bulk = true,
-  show = function() return Pattern.ACTIONS[sel_pattern().follow.b] end,
-  delta = function(d)
-    set_follow("b", util.clamp(sel_pattern().follow.b + d, 1, #Pattern.ACTIONS))
-  end}
-
-FIELDS[4] = {
-  name = "chance", bulk = true,
-  show = function() return sel_pattern().follow.chance .. "%" end,
-  delta = function(d)
-    set_follow("chance", util.clamp(sel_pattern().follow.chance + d * 5, 0, 100))
-  end}
-
-FIELDS[5] = {
-  name = "length",
-  show = function() return sel_pattern().length .. " st" end,
-  delta = function(d)
-    local p = sel_pattern()
-    p.length = util.clamp(p.length + d, 1, 64)
-  end}
-
--- lane settings are already one-per-lane, so `lane` and `kit` scope mean
--- nothing here -- only `all` widens them, to every lane at once.
-local function lane_field(name, id)
-  return {name = name, lane_wide = true,
-          show = function() return params:string(lane_param(sel_lane, id)) end,
-          delta = function(d)
-            params:delta(lane_param(sel_lane, id), d)
-            if scope == SCOPE_ALL then
-              local v = params:get(lane_param(sel_lane, id))
-              for i = 1, NUM_LANES do
-                if i ~= sel_lane then params:set(lane_param(i, id), v) end
-              end
-            end
-          end}
-end
-
-FIELDS[6] = lane_field("transition", "trans")
-FIELDS[7] = lane_field("division", "div")
-FIELDS[8] = lane_field("swing", "swing")
-FIELDS[9] = lane_field("chance/trig", "prob")
-FIELDS[10] = lane_field("level", "level")
-FIELDS[11] = lane_field("morph", "morph")
-
-FIELDS[12] = {
-  name = "scope",
-  show = function() return SCOPE_NAMES[scope] end,
-  delta = function(d) scope = util.clamp(scope + d, 1, #SCOPE_NAMES) end}
-
--- FOCUS drops length (the kit sets it), and the per-lane mix controls
--- (chance/trig, level) -- neither answers a question about the follow
--- engine, and eleven fields behind one encoder is too many to hold.
--- `scope` sits last in both lists so the field E3 lands on by default is
--- still `follow`, not something that silently widens the next edit.
-local FIELDS_FOCUS = {1, 2, 3, 4, 6, 7, 8, 11, 12}
-local FIELDS_FULL = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
-
--- what the field currently in front of you would actually write to, which
--- is not the same as `scope` -- a lane setting ignores `lane` and `kit`
-local function scope_label(f)
-  if scope == SCOPE_PATTERN then return nil end
-  if f.bulk then return SCOPE_NAMES[scope]:upper() end
-  if f.lane_wide and scope == SCOPE_ALL then return "ALL LANES" end
-  return nil
-end
+local field_key = "follow"
 
 local function field_list()
-  return pround("mode") == 1 and FIELDS_FOCUS or FIELDS_FULL
+  local base = LEVEL_FIELDS[edit_level_]
+  if pround("mode") ~= 1 then return base end
+  local out = {}
+  for _, k in ipairs(base) do
+    if not FOCUS_DROP[k] then out[#out + 1] = k end
+  end
+  return out
+end
+
+local function field_index()
+  local list = field_list()
+  for i, k in ipairs(list) do if k == field_key then return i, list end end
+  return 1, list
 end
 
 local function cur_field()
-  local list = field_list()
-  return FIELDS[list[util.clamp(field, 1, #list)]]
+  local i, list = field_index()
+  field_key = list[i]
+  return FIELDS[field_key]
+end
+
+local function move_field(d)
+  local i, list = field_index()
+  field_key = list[util.clamp(i + d, 1, #list)]
 end
 
 ---------------------------------------------------------------- params
 
--- VOICE ROUTING holds the real (channel, note) for each of the 12 voices;
--- "note layout" and "midi channel" are presets that write into it. nothing
--- reads the layout at send time, so the two can never disagree -- see the
--- header of voices.lua for why that matters.
 -- norns' Control:delta moves the RAW 0-1 value by d/100 and ignores the
--- param's step entirely, so a control with only a handful of steps needs a
--- great deal of encoder to move one of them: 50 clicks to toggle a
--- two-option control, 17 for a four-option one, 8 for the division. That is
--- the "it's waiting for a full turn" feel, and it hits every discrete
--- setting in the script.
---
--- everything here has to be a `control` rather than a `number` or `option`
--- because garc only renders rings for params that carry a controlspec. so
--- the fix is to override the param's own delta: for any control with 100
--- steps or fewer, one click is one step.
---
--- this also repairs the arc, in a way that was not obvious. garc smooths a
--- ring's fill by `controlspec.quantum` (step / range) -- i.e. it was
--- already written assuming one delta equals one step, which norns does not
--- do. the rings were being under-filled for exactly these params.
+-- param's step, so a control with only a handful of steps needs a great
+-- deal of encoder to move one of them (50 clicks to toggle a two-option
+-- control). everything here is a `control` because garc only renders rings
+-- for params with a controlspec, so the fix is to override the param's own
+-- delta: for anything with 100 steps or fewer, one click is one step. that
+-- also makes garc's ring smoothing correct, since it already assumed it.
 local function add_ctl(id, name, cs, formatter)
   params:add_control(id, name, cs)
   local p = params:lookup_param(id)
@@ -824,6 +974,9 @@ local function add_ctl(id, name, cs, formatter)
   return p
 end
 
+-- VOICE ROUTING holds the real (channel, note) for each of the 12 voices;
+-- "note layout" and "midi channel" are presets that write into it. nothing
+-- reads the layout at send time, so the two can never disagree.
 local routing_ready = false
 
 local function stamp_layout()
@@ -837,15 +990,24 @@ local function stamp_layout()
   end
 end
 
+-- a lane param with an "inherit" sentinel at the bottom of its range
+local function add_inherit(id, name, hi, step, sentinel, default, fmt)
+  add_ctl(id, name, controlspec.new(sentinel, hi, "lin", step, default, ""))
+  params:lookup_param(id).formatter = function(p)
+    local v = util.round(p:get())
+    if v == sentinel then return "global" end
+    return fmt(v)
+  end
+end
+
 local function add_params()
   params:add_separator("segue_head", "segue")
 
-  params:add_group("segue_global", "GLOBAL", 9)
+  params:add_group("segue_global", "GLOBAL", 7)
 
   -- FOCUS is the default while the follow engine and the kit library are
   -- the things being judged: it dims the performance rows on the FX grid
-  -- and trims the screen's field list. FULL turns everything back on --
-  -- nothing is removed, only hidden.
+  -- and trims the screen's field list. FULL turns everything back on.
   add_ctl("mode", "mode", controlspec.new(1, 2, "lin", 1, 1, ""))
   params:lookup_param("mode").formatter = function(p)
     return util.round(p:get()) == 1 and "focus" or "full"
@@ -857,9 +1019,12 @@ local function add_params()
     if row_hidden(6) then
       for i = 1, NUM_LANES do if lanes[i] then lanes[i].boost = nil end end
     end
-    field = 1
     screen_dirty = true
   end)
+
+  -- NEW BANKS GO AT THE END: psets store the option's number
+  params:add_option("bank", "bank", Library.bank_names(), 1)
+  params:set_action("bank", function(v) select_bank(v) end)
 
   -- the standard norns device picker: the vport number on its own tells you
   -- nothing about which box is on the other end
@@ -870,46 +1035,18 @@ local function add_params()
     if #name > 15 then name = util.acronym(name) end
     midi_devices[i] = i .. ": " .. name
   end
-  params:add{type = "option", id = "midi_out", name = "midi out",
-             options = midi_devices, default = 1,
-             action = function(v)
-               midi_dev = midi.connect(v)
-               if voices_out then voices_out.dev = midi_dev end
-             end}
-
-  params:add{type = "number", id = "midi_channel", name = "midi channel",
-             min = 1, max = 16, default = 1,
-             action = function() stamp_layout() end}
-
-  params:add{type = "option", id = "note_layout", name = "note layout",
-             options = Voices.LAYOUT_NAMES, default = Voices.LAYOUT_SEQ,
-             action = function() stamp_layout() end}
-
-  add_ctl("launch_quant", "launch quant",
-    controlspec.new(1, #Lane.QUANT_NAMES, "lin", 1, 7, ""))
-  params:set_action("launch_quant", function() screen_dirty = true end)
-  params:lookup_param("launch_quant").formatter = function(p)
-    return Lane.QUANT_NAMES[util.round(p:get())]
-  end
-
-  add_ctl("transition", "transition",
-    controlspec.new(1, #Lane.TRANS_NAMES, "lin", 1, Lane.TRANS_LEGATO, ""))
-  params:lookup_param("transition").formatter = function(p)
-    return Lane.TRANS_NAMES[util.round(p:get())]
-  end
-  params:set_action("transition", function(v)
-    -- the global control is a "set them all" convenience; each lane keeps
-    -- its own value, which the arc and the per-lane params still reach
-    for i = 1, NUM_LANES do params:set(lane_param(i, "trans"), v) end
-    screen_dirty = true
+  params:add_option("midi_out", "midi out", midi_devices, 1)
+  params:set_action("midi_out", function(v)
+    midi_dev = midi.connect(v)
+    if voices_out then voices_out.dev = midi_dev end
   end)
 
-  add_ctl("morph_steps", "morph steps",
-    controlspec.new(1, 32, "lin", 1, 8, "st"))
-  params:set_action("morph_steps", function(v)
-    for i = 1, NUM_LANES do params:set(lane_param(i, "morph"), v) end
-    screen_dirty = true
-  end)
+  params:add_number("midi_channel", "midi channel", 1, 16, 1)
+  params:set_action("midi_channel", function() stamp_layout() end)
+
+  params:add_option("note_layout", "note layout", Voices.LAYOUT_NAMES,
+                    Voices.LAYOUT_SEQ)
+  params:set_action("note_layout", function() stamp_layout() end)
 
   add_ctl("hat_choke", "closed hat chokes open",
     controlspec.new(0, 1, "lin", 1, 0, ""))
@@ -920,63 +1057,106 @@ local function add_params()
   params:add_trigger("panic", "panic")
   params:set_action("panic", function() if voices_out then voices_out:panic() end end)
 
+  -------------------------------------------------------------- defaults
+  -- the GLOBAL level of the inheritance chain. every lane and kit follows
+  -- these unless it has been given a value of its own. division, swing and
+  -- morph are resolved into the lanes on change (they are read every
+  -- tick); the rest resolve when a switch happens, so their actions only
+  -- need to repaint.
+  params:add_group("segue_defaults", "DEFAULTS", 9)
+
+  local function resync() sync_all_lanes() screen_dirty = true end
+  local function repaint() screen_dirty = true end
+
+  add_ctl("division", "division",
+    controlspec.new(1, #Lane.DIV_NAMES, "lin", 1, Lane.DIV_16TH, ""),
+    function(p) return Lane.DIV_NAMES[util.round(p:get())] end)
+  params:set_action("division", resync)
+
+  add_ctl("swing", "swing", controlspec.new(0, Lane.SWING_MAX, "lin", 1, 0, ""),
+    function(p) return FMT.swing(util.round(p:get())) end)
+  params:set_action("swing", resync)
+
+  add_ctl("morph_steps", "morph steps", controlspec.new(1, 32, "lin", 1, 8, "st"))
+  params:set_action("morph_steps", resync)
+
+  add_ctl("transition", "transition",
+    controlspec.new(1, #Lane.TRANS_NAMES, "lin", 1, Lane.TRANS_LEGATO, ""),
+    function(p) return Lane.TRANS_NAMES[util.round(p:get())] end)
+  params:set_action("transition", repaint)
+
+  add_ctl("launch_quant", "launch quant",
+    controlspec.new(1, #Lane.QUANT_NAMES, "lin", 1, Lane.DEFAULTS.quant, ""),
+    function(p) return Lane.QUANT_NAMES[util.round(p:get())] end)
+  params:set_action("launch_quant", repaint)
+
+  add_ctl("follow_time", "follow time",
+    controlspec.new(1, #Pattern.FOLLOW_TIMES, "lin", 1, Pattern.FOLLOW_IDX_END, ""),
+    function(p) return Pattern.FOLLOW_NAMES[util.round(p:get())] end)
+  params:set_action("follow_time", repaint)
+
+  add_ctl("follow_a", "follow action A",
+    controlspec.new(1, #Pattern.ACTIONS, "lin", 1, Pattern.ACTION_NONE, ""),
+    function(p) return Pattern.ACTIONS[util.round(p:get())] end)
+  params:set_action("follow_a", repaint)
+
+  add_ctl("follow_b", "follow action B",
+    controlspec.new(1, #Pattern.ACTIONS, "lin", 1, Pattern.ACTION_NONE, ""),
+    function(p) return Pattern.ACTIONS[util.round(p:get())] end)
+  params:set_action("follow_b", repaint)
+
+  add_ctl("follow_chance", "follow chance",
+    controlspec.new(0, 100, "lin", 5, 100, "%"),
+    function(p) return util.round(p:get()) .. "%" end)
+  params:set_action("follow_chance", repaint)
+
   -------------------------------------------------------------- per lane
+  -- the LANE level. an inheritable setting's lowest value is "global".
+  -- the library's per-lane follow behaviour (toms step on, hats drift) is
+  -- written in as these params' defaults, so a fresh boot and "reset"
+  -- both land on it.
   for i = 1, NUM_LANES do
     local spec = Library.LANES[i]
-    params:add_group("segue_lane_" .. i, i .. " " .. spec.name, 8)
+    local fo = spec.follow or {}
+    params:add_group("segue_lane_" .. i, i .. " " .. spec.name, 12)
 
-    add_ctl(lane_param(i, "div"), "division",
-      controlspec.new(1, #Lane.DIV_NAMES, "lin", 1, Lane.DIV_16TH, ""))
-    params:lookup_param(lane_param(i, "div")).formatter = function(p)
-      return Lane.DIV_NAMES[util.round(p:get())]
-    end
-
-    add_ctl(lane_param(i, "swing"), "swing",
-      controlspec.new(0, Lane.SWING_MAX, "lin", 1, 0, ""))
-    params:lookup_param(lane_param(i, "swing")).formatter = function(p)
-      -- a percentage of the lane's own step, so it means the same thing at
-      -- any division. the tick grid can only land on so many of them (about
-      -- 4% apart at a 1/16 division), so show what will actually be played
-      -- rather than what was asked for -- otherwise the knob claims a
-      -- precision the clock does not have.
-      local want = util.round(p:get())
-      if want == 0 then return "straight" end
-      local dt = Lane.DIV_TICKS[pround(lane_param(i, "div"))]
-      local ticks = math.floor(want / 100 * dt + 0.5)
-      if ticks >= dt then ticks = dt - 1 end
-      return math.floor(ticks / dt * 100 + 0.5) .. "%"
-    end
-
+    add_inherit(lane_param(i, "div"), "division", #Lane.DIV_NAMES, 1, 0, 0,
+      FMT.div)
+    add_inherit(lane_param(i, "swing"), "swing", Lane.SWING_MAX, 1, -1, -1,
+      FMT.swing)
     add_ctl(lane_param(i, "prob"), "chance / trig",
       controlspec.new(0, 1, "lin", 0.01, 1, ""))
-    add_ctl(lane_param(i, "level"), "level",
-      controlspec.new(0, 2, "lin", 0.01, 1, ""))
-
+    -- `level` is the id psets know it by (CONVENTIONS §5: ids are
+    -- permanent), shown as "velocity" because that is what it is: a scale
+    -- on every hit's velocity. capped at 1.0 so it can only turn things
+    -- down -- above 1 it clipped accents and normals together at 127 and
+    -- erased the dynamics the kits are written in.
+    add_ctl(lane_param(i, "level"), "velocity",
+      controlspec.new(0, 1, "lin", 0.01, 1, ""),
+      function(p) return math.floor(p:get() * 100 + 0.5) .. "%" end)
     add_ctl(lane_param(i, "mute"), "mute",
-      controlspec.new(0, 1, "lin", 1, 0, ""))
-    params:lookup_param(lane_param(i, "mute")).formatter = function(p)
-      return p:get() > 0.5 and "muted" or "on"
-    end
-
+      controlspec.new(0, 1, "lin", 1, 0, ""),
+      function(p) return p:get() > 0.5 and "muted" or "on" end)
     add_ctl(lane_param(i, "follow"), "follow",
-      controlspec.new(0, 1, "lin", 1, 1, ""))
-    params:lookup_param(lane_param(i, "follow")).formatter = function(p)
-      return p:get() > 0.5 and "on" or "off"
-    end
-
-    add_ctl(lane_param(i, "trans"), "transition",
-      controlspec.new(1, #Lane.TRANS_NAMES, "lin", 1, Lane.TRANS_LEGATO, ""))
-    params:lookup_param(lane_param(i, "trans")).formatter = function(p)
-      return Lane.TRANS_NAMES[util.round(p:get())]
-    end
-
-    add_ctl(lane_param(i, "morph"), "morph steps",
-      controlspec.new(1, 32, "lin", 1, 8, "st"))
+      controlspec.new(0, 1, "lin", 1, 1, ""),
+      function(p) return p:get() > 0.5 and "on" or "off" end)
+    add_inherit(lane_param(i, "trans"), "transition", #Lane.TRANS_NAMES, 1,
+      0, 0, FMT.trans)
+    add_inherit(lane_param(i, "morph"), "morph steps", 32, 1, 0, 0,
+      FMT.morph)
+    add_inherit(lane_param(i, "ftime"), "follow time", #Pattern.FOLLOW_TIMES,
+      1, 0, fo.follow_time or 0, FMT.follow_time)
+    add_inherit(lane_param(i, "fa"), "follow action A", #Pattern.ACTIONS, 1,
+      0, fo.follow_a or 0, FMT.follow_a)
+    add_inherit(lane_param(i, "fb"), "follow action B", #Pattern.ACTIONS, 1,
+      0, fo.follow_b or 0, FMT.follow_b)
+    add_inherit(lane_param(i, "fchance"), "follow chance", 100, 5, -5,
+      fo.follow_chance or -5, FMT.follow_chance)
 
     for _, f in ipairs({"div", "swing", "prob", "level", "mute", "follow",
-                        "trans", "morph"}) do
+                        "trans", "morph", "ftime", "fa", "fb", "fchance"}) do
       params:set_action(lane_param(i, f), function()
-        if lanes[i] then sync_lane_from_params(i) end
+        sync_lane_from_params(i)
         screen_dirty = true
       end)
     end
@@ -985,108 +1165,99 @@ local function add_params()
   -------------------------------------------------------------- routing
   params:add_group("segue_routing", "VOICE ROUTING", Voices.COUNT * 2)
   for v = 1, Voices.COUNT do
-    local def_ch, def_note =
-      Voices.layout_address(Voices.LAYOUT_SEQ, v, 1)
-    params:add{type = "number", id = "voice_" .. v .. "_chan",
-               name = Voices.NAMES[v] .. " channel", min = 1, max = 16,
-               default = def_ch,
-               action = function(val)
-                 if voices_out then voices_out:set_address(v, val, nil) end
-               end}
-    params:add{type = "number", id = "voice_" .. v .. "_note",
-               name = Voices.NAMES[v] .. " note", min = 0, max = 127,
-               default = def_note,
-               action = function(val)
-                 if voices_out then voices_out:set_address(v, nil, val) end
-               end}
+    local def_ch, def_note = Voices.layout_address(Voices.LAYOUT_SEQ, v, 1)
+    params:add_number("voice_" .. v .. "_chan", Voices.NAMES[v] .. " channel",
+                      1, 16, def_ch)
+    params:set_action("voice_" .. v .. "_chan", function(val)
+      if voices_out then voices_out:set_address(v, val, nil) end
+    end)
+    params:add_number("voice_" .. v .. "_note", Voices.NAMES[v] .. " note",
+                      0, 127, def_note)
+    params:set_action("voice_" .. v .. "_note", function(val)
+      if voices_out then voices_out:set_address(v, nil, val) end
+    end)
   end
-  -- from here on a layout change can write into the params above. adding
-  -- the group before flipping this is what stops stamp_layout() running
-  -- against params that do not exist yet.
+  -- from here on a layout change can write into the params above
   routing_ready = true
 
   -------------------------------------------------------------- arc
   params:add_group("segue_arc", "ARC", 4)
-  add_ctl("arc_threshold", "sensitivity",
-    controlspec.new(1, 20, "lin", 1, 6, ""))
-  add_ctl("arc_brightness", "brightness",
-    controlspec.new(1, 15, "lin", 1, 10, ""))
-  add_ctl("arc_dim", "tick level",
-    controlspec.new(0, 15, "lin", 1, 2, ""))
-  add_ctl("arc_position", "orientation",
-    controlspec.new(1, 4, "lin", 1, 1, ""))
+  add_ctl("arc_threshold", "sensitivity", controlspec.new(1, 20, "lin", 1, 6, ""))
+  add_ctl("arc_brightness", "brightness", controlspec.new(1, 15, "lin", 1, 10, ""))
+  add_ctl("arc_dim", "tick level", controlspec.new(0, 15, "lin", 1, 2, ""))
+  add_ctl("arc_position", "orientation", controlspec.new(1, 4, "lin", 1, 1, ""))
 end
 
 ---------------------------------------------------------------- persistence
 
--- the pattern/scene data is a table, not params: 8 lanes x 8 patterns x
--- (up to 4 rows x 64 steps) plus follow settings would be thousands of
--- entries and would bury the PARAMS menu. same split rytmpatch uses --
--- settings are params, sound data rides alongside the pset via
--- action_write/action_read and tab.save/tab.load (no cjson, which needs an
--- ARM binary that isn't on the device).
-local function data_path(filename)
-  return norns.state.data .. filename
-end
+-- two files, on purpose:
+--
+--   segue-user.data   the user bank. it is YOUR library, so it lives on
+--                     its own and no pset load can overwrite it -- loading
+--                     an old pset must not quietly throw away the kits you
+--                     have built since.
+--   segue-last.data   which bank you were on and which kit each lane was
+--   segue-<n>.data    playing (the autosave, and one per pset). settings
+--                     are params, so psets carry those themselves.
+--
+-- factory banks are never saved at all: they are read-only, and loading
+-- them always gives exactly what shipped (see bank_column).
+local function data_path(filename) return norns.state.data .. filename end
 
-local function collect_data()
-  local d = {lanes = {}, scenes = {}}
-  for i = 1, NUM_LANES do d.lanes[i] = lanes[i]:serialize() end
-  for i = 1, 8 do
-    if scenes[i] then
-      local s = {}
-      for j = 1, NUM_LANES do s[j] = scenes[i][j] end
-      d.scenes[i] = s
-    end
-  end
-  return d
-end
-
-local function apply_data(d)
-  if type(d) ~= "table" then return end
-  if d.lanes then
-    for i = 1, NUM_LANES do
-      if d.lanes[i] then
-        -- pattern content and which slot is playing, but NOT the lane's
-        -- settings: those live in params, and a pset restores them that
-        -- way. letting the blob restore them too meant every lane setting
-        -- survived a power cycle whether you wanted it to or not, with no
-        -- way back to a known state.
-        lanes[i]:deserialize(d.lanes[i])
-        sync_lane_from_params(i)
-      end
-    end
-  end
-  scenes = {}
-  if d.scenes then
-    for i = 1, 8 do
-      if d.scenes[i] then
-        local s = {}
-        for j = 1, NUM_LANES do s[j] = d.scenes[i][j] end
-        scenes[i] = s
-      end
-    end
-  end
-  screen_dirty = true
-end
-
-local function write_data(filename)
-  local okw, err = pcall(function()
-    tab.save(collect_data(), data_path(filename))
-  end)
+local function save_table(t, filename)
+  local okw, err = pcall(function() tab.save(t, data_path(filename)) end)
   if not okw then print("segue: could not save " .. filename .. ": " .. tostring(err)) end
 end
 
-local function read_data(filename)
+local function load_table(filename)
   local path = data_path(filename)
-  if not util.file_exists(path) then return false end
+  if not util.file_exists(path) then return nil end
   local okr, d = pcall(function() return tab.load(path) end)
-  if okr and type(d) == "table" then
-    apply_data(d)
-    return true
-  end
+  if okr and type(d) == "table" then return d end
   print("segue: could not load " .. filename)
-  return false
+  return nil
+end
+
+local function save_user_bank()
+  local d = {}
+  for i = 1, NUM_LANES do d[i] = Lane.pack_column(user_bank[i]) end
+  save_table({user = d}, "segue-user.data")
+end
+
+local function load_user_bank()
+  local d = load_table("segue-user.data")
+  for i = 1, NUM_LANES do
+    local spec = Library.LANES[i]
+    if d and d.user and d.user[i] then
+      user_bank[i] = Lane.unpack_column(d.user[i], Pattern, #spec.voices)
+    else
+      user_bank[i] = empty_user_column(i)
+    end
+  end
+end
+
+local function collect_state()
+  local d = {bank = current_bank, actives = {}}
+  for i = 1, NUM_LANES do d.actives[i] = lanes[i].active end
+  return d
+end
+
+local function apply_state(d)
+  if type(d) ~= "table" then return end
+  if d.bank and Library.BANKS[d.bank] then
+    -- silent, then load directly: a restore lands at once rather than
+    -- queueing a hand-off the way a live bank change does
+    params:set("bank", d.bank, true)
+    load_bank_now(d.bank)
+  end
+  if d.actives then
+    for i = 1, NUM_LANES do
+      local a = d.actives[i]
+      if a and a >= 1 and a <= Lane.PATTERN_COUNT then lanes[i].active = a end
+    end
+  end
+  sync_all_lanes()
+  screen_dirty = true
 end
 
 ---------------------------------------------------------------- init
@@ -1094,37 +1265,43 @@ end
 local function build_lanes()
   for i = 1, NUM_LANES do
     local spec = Library.LANES[i]
+    -- the lane's inheritance parent: its own param, else the global one
     lanes[i] = Lane:new{pattern_lib = Pattern, id = i, name = spec.name,
-                        voices = spec.voices}
-    Library.populate(lanes[i], spec, Pattern)
-  end
-  for i = 1, 8 do
-    local s = {}
-    for j = 1, NUM_LANES do s[j] = i end
-    scenes[i] = s
+                        voices = spec.voices,
+                        parent = function(key) return parent_value(i, key) end}
   end
 end
 
 local function build_arc()
-  -- `all_ids` is garc's broadcast hook: hold the shift key (K1, via the
-  -- shift_fn below) and a turn applies to every lane instead of just the
-  -- selected one. it was being passed shift_fn with no ring ever declaring
-  -- all_ids, so holding K1 on the arc did nothing at all until now.
+  -- rings follow the EDIT LEVEL: at global they turn the global param, at
+  -- any other level the selected lane's. the arc binds to params, and the
+  -- pattern level is data, so kit/pattern fall back to the lane.
   --
-  -- note this deltas each lane independently rather than assigning one
-  -- value to all of them, so lanes that were set differently stay
-  -- different. that is garc's own behaviour -- the module is a shared copy
-  -- across three scripts and stays byte-identical -- and it is the right
-  -- feel for a performance nudge. the screen's `scope` does the assigning
-  -- kind for settings work.
-  local function lane_ring(label, id)
+  -- K1 held broadcasts a ring to every lane (garc's all_ids). at global
+  -- level there is nothing to broadcast to, so all_ids returns just the
+  -- global -- an empty list would make the turn do nothing at all.
+  local function ring(label, key)
+    local spec = INHERIT[key]
     return {label = label,
-            id = function() return lane_param(sel_lane, id) end,
-            all_ids = function()
-              local t = {}
-              for i = 1, NUM_LANES do t[i] = lane_param(i, id) end
-              return t
-            end}
+      id = function()
+        if edit_level_ == L_GLOBAL or spec.lane == nil then return spec.global end
+        return lane_param(sel_lane, spec.lane)
+      end,
+      all_ids = function()
+        if edit_level_ == L_GLOBAL or spec.lane == nil then return {spec.global} end
+        local t = {}
+        for i = 1, NUM_LANES do t[i] = lane_param(i, spec.lane) end
+        return t
+      end}
+  end
+  local function lane_ring(label, suffix)
+    return {label = label,
+      id = function() return lane_param(sel_lane, suffix) end,
+      all_ids = function()
+        local t = {}
+        for i = 1, NUM_LANES do t[i] = lane_param(i, suffix) end
+        return t
+      end}
   end
   garc_ = GArc:new{
     threshold_id = "arc_threshold",
@@ -1134,15 +1311,15 @@ local function build_arc()
     shift_fn = function() return shift end,
     pages = {
       {name = "PLAY", rings = {
-        lane_ring("div", "div"),
-        lane_ring("swing", "swing"),
+        ring("div", "div"),
+        ring("swing", "swing"),
         lane_ring("chance", "prob"),
-        lane_ring("level", "level"),
+        lane_ring("vel", "level"),
       }},
       {name = "MORPH", rings = {
-        lane_ring("trans", "trans"),
-        lane_ring("morph", "morph"),
-        {label = "quant", id = "launch_quant"},
+        ring("trans", "trans"),
+        ring("morph", "morph"),
+        ring("quant", "quant"),
         {label = "lane", id = "sel_lane"},
       }},
     }}
@@ -1152,15 +1329,15 @@ function init()
   math.randomseed(util.time() * 1000)
 
   build_lanes()
+  load_user_bank()
   add_params()
 
   -- a param purely so the arc has something to turn for lane select; it is
   -- the same value E1 moves, mirrored so both stay in step
-  add_ctl("sel_lane", "lane",
-    controlspec.new(1, NUM_LANES, "lin", 1, 1, ""))
-  params:lookup_param("sel_lane").formatter = function(p)
-    return util.round(p:get()) .. " " .. Library.LANES[util.round(p:get())].name
-  end
+  add_ctl("sel_lane", "lane", controlspec.new(1, NUM_LANES, "lin", 1, 1, ""),
+    function(p)
+      return util.round(p:get()) .. " " .. Library.LANES[util.round(p:get())].name
+    end)
   params:set_action("sel_lane", function(v)
     sel_lane = util.round(v)
     if garc_ then garc_:redraw() end
@@ -1184,32 +1361,38 @@ function init()
   params:add_separator("segue_data", "patterns")
   params:add_trigger("reseed", "reseed follow lanes")
   params:set_action("reseed", reseed)
-  params:add_trigger("reset_defaults", "reset to factory kits")
+  params:add_trigger("copy_user", "copy playing kit to user")
+  params:set_action("copy_user", function() copy_to_user() save_user_bank() end)
+  params:add_trigger("reset_defaults", "reset to factory")
   params:set_action("reset_defaults", reset_to_defaults)
+  params:add_trigger("clear_user", "clear user bank")
+  params:set_action("clear_user", function() clear_user_bank() save_user_bank() end)
 
   params.action_write = function(filename, name, number)
-    write_data("segue-" .. number .. ".data")
+    save_table(collect_state(), "segue-" .. number .. ".data")
   end
   params.action_read = function(filename, silent, number)
-    read_data("segue-" .. number .. ".data")
+    apply_state(load_table("segue-" .. number .. ".data"))
   end
   params.action_delete = function(filename, name, number)
     local path = data_path("segue-" .. number .. ".data")
     if util.file_exists(path) then os.remove(path) end
   end
 
-  -- the repeat buffer is built once here rather than on the first press:
-  -- the bucket headers are tiny and there are only 192 of them; the hit
-  -- tables inside them are created on demand (see rep_put), since most
-  -- ticks of a capture window record nothing at all
+  -- norns clears these on unload, so they are assigned here (CONVENTIONS §6)
+  clock.transport.start = function() if not playing then start_playing() end end
+  clock.transport.stop = function() stop_playing() end
+
+  -- the repeat buffer's bucket headers, built once rather than on the first
+  -- press; the hit tables inside are created on demand (see rep_put)
   for o = 0, REPEAT_MAX - 1 do rep_slot(o) end
 
+  load_bank_now(1)
   params:bang()
-  for i = 1, NUM_LANES do sync_lane_from_params(i) end
+  sync_all_lanes()
 
-  -- last session's patterns come back without being sent anywhere, the same
-  -- way rytmpatch reloads its last state on init
-  read_data("segue-last.data")
+  -- which bank and kits you were on come back without sending anything
+  apply_state(load_table("segue-last.data"))
 
   if garc_ then garc_:redraw() end
 
@@ -1227,11 +1410,6 @@ function init()
     end
   end)
 end
-
----------------------------------------------------------------- transport hooks
-
-function clock.transport.start() if not playing then start_playing() end end
-function clock.transport.stop() stop_playing() end
 
 ---------------------------------------------------------------- keys / encs
 
@@ -1264,11 +1442,7 @@ function enc(n, d)
   elseif n == 2 then
     sel_slot = util.clamp(sel_slot + d, 1, Lane.PATTERN_COUNT)
   elseif n == 3 then
-    if shift then
-      field = util.clamp(field + d, 1, #field_list())
-    else
-      cur_field().delta(d)
-    end
+    if shift then move_field(d) else cur_field().delta(d) end
   end
   touch()
 end
@@ -1285,6 +1459,7 @@ local ROW_H = 4
 -- it. garc keeps no timestamp and is a byte-identical shared copy, so
 -- rather than change it: the footer string changing IS the touch.
 local ARC_HOLD = 1.5
+local NOTICE_HOLD = 1.5
 local last_footer, last_footer_at = nil, -math.huge
 
 local function arc_fresh()
@@ -1298,22 +1473,24 @@ local function arc_fresh()
 end
 
 -- "when does this change, and to what?" -- the question the whole script
--- poses, and the one thing the screen was not answering. a queued launch
--- outranks a follow action because you asked for it explicitly.
+-- poses. a pending bank switch and a queued launch outrank a follow action,
+-- because you asked for those explicitly.
 local function next_text(l)
   local quant = Lane.QUANT_TICKS[pround("launch_quant")]
-
   local n = l:steps_to_launch(tick, quant)
   if n then
-    return "> " .. l.bank[l.queued].name .. (n > 0 and ("  " .. n) or "  now")
+    local dest
+    if l.queued then dest = l.bank[l.queued].name
+    else dest = Library.BANKS[bank_target or current_bank].name .. " bank" end
+    return "> " .. dest .. (n > 0 and ("  " .. n) or "  now")
   end
 
-  local trans = Lane.TRANS_NAMES[l.transition]
+  local trans = Lane.TRANS_NAMES[l:setting("trans")] or "?"
   if rep_col then return trans .. "  rpt " .. REPEAT_NAMES[rep_col] end
 
   local f = l:steps_to_follow()
   if f then
-    local act = Pattern.ACTIONS[l:pattern().follow.a]
+    local act = Pattern.ACTIONS[l:setting("follow_a")] or "?"
     return trans .. "  " .. act .. " " .. f
   end
   return trans .. "  q " .. Lane.QUANT_NAMES[pround("launch_quant")]
@@ -1326,18 +1503,20 @@ function redraw()
   local l = lanes[sel_lane]
   local p = l.bank[sel_slot]
 
-  -- header: which lane and pattern the encoders are pointed at
+  -- header: bank, then the lane and kit the encoders are pointed at
   screen.level(15)
   screen.move(0, 7)
+  screen.text(Library.BANKS[current_bank].short or "?")
+  screen.move(20, 7)
   screen.text(Library.LANES[sel_lane].name)
   screen.level(6)
-  screen.move(34, 7)
-  screen.text(sel_slot .. " " .. p.name)
+  screen.move(46, 7)
+  screen.text(p.name)
   screen.level(playing and 12 or 3)
   screen.move(128, 7)
   screen.text_right("" .. math.floor(clock.get_tempo() + 0.5))
 
-  -- the bank: lanes across, slots down. this is the launch grid on screen.
+  -- the bank: lanes across, kits down. this is the launch grid on screen.
   for i = 1, NUM_LANES do
     local ln = lanes[i]
     local x = MATRIX_X + (i - 1) * COL_W
@@ -1366,7 +1545,7 @@ function redraw()
     screen.fill()
   end
 
-  -- selection marker under the chosen lane / beside the chosen slot
+  -- selection marker under the chosen lane / beside the chosen kit
   screen.level(15)
   local sx = MATRIX_X + (sel_lane - 1) * COL_W
   screen.rect(sx, MATRIX_Y - 3, 6, 1)
@@ -1374,32 +1553,30 @@ function redraw()
   screen.rect(MATRIX_X - 3, MATRIX_Y + (sel_slot - 1) * ROW_H, 1, 3)
   screen.fill()
 
-  -- the field E3 is editing
-  screen.level(15)
-  screen.move(0, 54)
+  -- the field E3 is editing: which level it lands on, then its value --
+  -- bright if set at this level, dim if it is inherited from further up
   local f = cur_field()
-  local badge = scope_label(f)
-  if badge then
-    -- an armed bulk edit has to be impossible to miss: it goes in front of
-    -- the field name, on the line where the edit happens
-    screen.level(15)
-    screen.text("[" .. badge .. "] ")
-    screen.level(10)
-    screen.text(f.name .. " " .. f.show())
-  else
-    screen.text(f.name .. " " .. f.show())
-  end
+  local val, inherited = f.show()
+  screen.move(0, 54)
+  screen.level(15)
+  screen.text("[" .. LEVEL_TAGS[edit_level_] .. "] ")
+  screen.level(10)
+  screen.text(f.name .. " ")
+  screen.level(inherited and 4 or 15)
+  screen.text(val)
 
-  -- bottom line. three things want it, in this order of urgency:
-  --   EDIT       the grid means something else entirely right now
-  --   arc        but only just after a ring moved -- see arc_fresh()
-  --   what next  the standing answer to "when does this change?"
+  -- bottom line, in order of urgency: the step editor, a one-off notice, the
+  -- arc just after a ring moved, and otherwise what happens next
   screen.level(4)
   screen.move(0, 62)
   if edit_mode then
     screen.level(15)
-    screen.text("EDIT  steps " .. (edit_page * 8 + 1) .. "-" ..
-                math.min(p.length, edit_page * 8 + 8) .. " of " .. p.length)
+    screen.text("EDIT " .. (edit_page * 8 + 1) .. "-" ..
+                math.min(p.length, edit_page * 8 + 8) .. "/" .. p.length ..
+                (bank_is_user(current_bank) and "" or "  temp"))
+  elseif notice and (util.time() - notice_at) < NOTICE_HOLD then
+    screen.level(15)
+    screen.text(notice)
   elseif arc_fresh() then
     screen.text(garc_:footer_text())
   else
@@ -1411,10 +1588,13 @@ end
 
 ---------------------------------------------------------------- cleanup
 
+-- what norns cannot do for us (CONVENTIONS §3): the note-offs, and saving
+-- what the params do not hold. norns cancels the clocks itself.
 function cleanup()
-  if clock_id then clock.cancel(clock_id) end
-  if redraw_id then clock.cancel(redraw_id) end
   if voices_out then voices_out:panic() end
   if gridui then gridui:cleanup() end
-  write_data("segue-last.data")
+  if lanes[1] then
+    save_table(collect_state(), "segue-last.data")
+    save_user_bank()
+  end
 end

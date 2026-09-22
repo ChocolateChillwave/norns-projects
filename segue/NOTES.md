@@ -2,7 +2,11 @@
 
 Follow-action drum sequencer for the Elektron Analog Rytm MKII, modelled on
 Ableton Live's clip follow actions. MIDI-out only, no engine.
-Started 2026-09-17; **not yet run on a device or against a real Rytm.**
+Started 2026-09-17. **Being played on hardware since 2026-09-20.** v0.8
+(banks, inheritance, the FX grid redesign) had its first play session on
+2026-09-21 and went well — "understanding more of the structure of the
+interface". That was a general session, not a check of the specific open
+items below, so they stay open.
 
 The idea, from the reference video: in Live a clip can hand off to another
 clip on its own schedule, and if the hand-off is *legato* the new clip picks
@@ -62,15 +66,23 @@ quantize. Desk-tested hard (628 assertions) and never heard.
 - [ ] Is "chance" the right knob, or does it want a per-pattern weight
       across several destinations rather than an A/B split?
 
-### 2 · Beat generation — *first pass done 2026-09-20*
+### 2 · Beat generation — *banks landed 2026-09-21*
 
-The kit library, now organised so a row is a whole beat (amen, four four,
-think, electro, rolling, funky, halftime, hypnotic) rather than eight
-unrelated per-voice patterns.
+Eight banks of eight kits — generic, house, techno, electro, breakbeats,
+variety, variety 2, user — so 56 factory kits (40 written, 16 of them picks in
+the two variety banks) plus a bank of your own.
 
+- [x] ~~Eight kits enough, or does it want 16+ and a bank switch?~~ Banks,
+      grouped by genre so follow drift stays coherent (see Key decisions).
 - [ ] Do the breaks read as the breaks? The transcriptions are from memory
       at 16th resolution — see the header of `library.lua`.
-- [ ] Eight kits enough, or does it want 16+ and a bank switch?
+- [ ] **Do the banks' kits actually interplay?** The whole point of grouping
+      by genre is that any lane from any kit in a bank sits over any other.
+      That is a judgment made at a desk; the "everything at once" recipe in
+      FOLLOW.md §11 is the fast way to test it by ear.
+- [ ] Are the two variety banks the right picks? They lean four-to-the-floor
+      and broken respectively, so each hangs together — but which kits
+      genuinely work together is an ear call.
 - [x] ~~Swing is limited to 0/17/33/50% by the tick grid.~~ Done
       2026-09-20: PPQN 24 → 96, and swing is now a percentage of the step
       rather than a tick count. ~4% resolution, 19 settings instead of 4.
@@ -105,27 +117,33 @@ Screen, launch grid, step editor, arc.
       Legible, or mush? **Needs eyes.**
 - [ ] Is the fading-active-cell playhead readable on the grid, or does it
       just look like flicker? **Needs eyes.**
-- [ ] Twelve editable fields behind shift+E3 is a lot. `focus` trims it to
-      nine; the right answer may be fewer still, or a page structure. Not
-      touched yet — worth deciding once the screen has been looked at.
+- [x] ~~The FX grid was hard to learn~~ (2026-09-21: "mute makes sense,
+      haven't used anything else much"). Redesigned — see Key decisions.
+      Still flagged by you as a **work in progress**, so treat the layout as
+      open to change after it has been played.
+- [x] ~~The scope field copied values~~, so it couldn't tell a deliberate
+      setting from a copy. Replaced by inheritance and a **level** field.
+- [ ] The field list is shorter per level now (global 10, lane 11, kit 7,
+      pattern 8; focus trims a few), but it is still one encoder walking a
+      list. Worth another look once the level model has been played.
 - [ ] Nothing shows which kit a lane is on except the selected one. Eight
       names will not fit; an abbreviation row might.
+- [ ] The header now leads with a three-letter bank code (GEN/HSE/TEC...).
+      Legible at that size? **Needs eyes.**
 
 ### 4 · Performance — *built, hidden*
 
-Beat repeat, roll, solo, scenes.
+Beat repeat, roll, solo.
 
 - [ ] Beat repeat is global and captures forwards. Per-lane, and capturing
       backwards, are both plausible and both more work.
-- [ ] Scenes now mean "launch a whole kit", which makes the row the primary
-      gesture. They are still unlabelled and unviewable until launched.
 - [ ] Nothing here gets judged until 1–3 are good.
 
 ### Not in any phase yet
 
-rytmpatch integration (patch drift tied to follow actions), per-pattern
-transition override, hybrid kits + variations, lane/voice resplit. All in
-Open items below.
+rytmpatch integration (patch drift tied to follow actions), hybrid kits +
+variations, lane/voice resplit. All in Open items below. (Per-pattern
+transition override was on this list and shipped with inheritance.)
 
 ## Key decisions
 
@@ -209,35 +227,97 @@ Open items below.
   - Tested by reconstructing each kit's intended voice set from the source
     and asserting that launching it sounds exactly those voices — no lane
     bleeding through from the previous kit, no part that never fires.
-- **Bulk follow editing via an `scope` field** (2026-09-20). Follow settings
-  are per pattern, which is 64 × 4 values, and there was no way to set more
-  than one at a time — the gap that prompted this. Scope is `pattern` /
-  `lane` (the selected lane's 8) / `kit` (the selected slot on all 8 lanes,
-  which only means something now rows are kits) / `all`, and it shows as a
-  bracketed badge on the field line whenever it is armed.
-  - A bulk edit **assigns** rather than deltas: the value is computed from
-    the pattern on screen and written to everything in scope, so they end up
-    identical and the displayed number is the truth. Delta-ing each
-    independently would preserve differences but leave the screen lying
-    about what just happened.
-  - Deliberately excluded: `length`. It changes what a pattern *is* rather
-    than how it behaves, and the kits are different lengths on purpose.
-  - Lane settings (division, swing, transition…) are already one-per-lane,
-    so they ignore `lane` and `kit` and only widen at `all`. The badge reads
-    `[ALL LANES]` for those so the distinction is visible rather than a
-    thing you have to remember.
+- **Settings inherit: global → lane → pattern** (2026-09-21), replacing the
+  v0.4 `scope` field. You asked for "default to global, and let lanes,
+  patterns or clips have their own setting if needed", which is the Ableton
+  idiom exactly — a clip's launch quantize reads *Global* until changed.
+  - **Why scope had to go, not just default to `all`:** scope *copied* a
+    value into many patterns. Once copied, a deliberate per-lane setting and
+    a copy were indistinguishable, so the next wide edit flattened both.
+    Inheritance stores "no value of my own" as a real state, so a global edit
+    moves everything that inherits and leaves every override alone. That
+    property is the one the tests pin hardest.
+  - **Where each level lives** (the `INHERIT` table in segue.lua): global
+    and lane are **params** — that gets them the menu, psets and the arc —
+    and the pattern level is `pattern.ov`, since 64 patterns × 6 keys would
+    bury the menu. A lane param's lowest value is an "inherit" sentinel
+    (`0`, or `-1` for swing, `-5` for chance), so clearing a lane override is
+    the same gesture as clearing a pattern one: turn it down past the bottom.
+  - **Hot vs cold settings.** Division, swing and morph are read every tick
+    at 96 PPQN, so they are resolved into plain lane fields whenever the
+    lane or global value changes (`sync_lane_from_params`). Follow settings,
+    transition and quantize are only read when something changes, so they
+    resolve lazily through `Lane:setting()`. The hot path never pays for a
+    lookup.
+  - **The arriving pattern decides.** Transition and quantize come from the
+    pattern being launched, not the one being left — so a fill with its own
+    `cut` always cuts in. Also true of bank switches and follow actions.
+  - **Materialise, don't jump.** From an inherited value, the first click up
+    adopts the value already in force; only the next click changes it. So
+    turning a knob to "take ownership" of a setting never makes an audible
+    jump to the bottom of the range.
+  - **Kit-level edits skip empty patterns**, because an empty pattern's
+    `none` override is what keeps a sat-out voice silent (see the library
+    decision below). A kit-wide `follow_a = other` would otherwise pull
+    every silent lane back in.
+  - The shipped behaviour is now **one global value plus three lane
+    overrides** (toms step on, the hats drift) instead of 64 copies. Those
+    overrides are the lane params' *defaults*, so a fresh boot and "reset to
+    factory" both land on them.
 - **Arc broadcast wired up** (2026-09-20). `garc` has had an `all_ids` hook
   since polyphasic — hold the shift key and a ring applies to every track —
   and segue was passing `shift_fn` while no ring ever declared `all_ids`, so
   holding K1 on the arc did nothing at all. Fixed by giving every per-lane
-  ring an `all_ids`. Note it deltas each lane independently rather than
-  assigning (that is garc's behaviour, and the module stays byte-identical
-  across the three scripts that share it) — so the arc keeps lanes'
-  differences and the screen's scope flattens them. Different on purpose:
-  one is a performance nudge, the other is settings work.
-  - The arc still cannot reach follow settings, because it binds to param
-    ids and follow settings live in the pattern data blob, not in params.
-    Making them params would mean 256 of them; not worth it.
+  ring an `all_ids`. It deltas each lane independently rather than assigning
+  (garc's behaviour; the module stays byte-identical across the three
+  scripts that share it), so the arc keeps lanes' differences.
+  - Since v0.8 the rings **follow the edit level**: at global a ring turns the
+    global param, otherwise the selected lane's. At global level `all_ids`
+    returns just the global id — an empty list would make a K1-held turn do
+    nothing at all. The arc still can't reach a single pattern's override,
+    because it binds to params.
+- **Eight genre banks** (2026-09-21), replacing a single 8-kit library.
+  - **Grouped by genre, on purpose.** Follow actions drift single lanes
+    between the kits of the loaded bank, so the kick can still be on kit 2
+    when the hat lands on kit 5. That only sounds intentional if the kits
+    belong together; the single mixed library put house next to a breakbeat
+    and the drift clashed. You proposed the grouping; the interplay rule is
+    what makes it matter.
+  - **The variety banks are picks, not copies** — `{bank name, kit number}`
+    resolved at load — so a kit exists once and can't drift out of step with
+    its duplicate. `variety` leans four-to-the-floor and `variety 2` broken,
+    so each still drifts coherently.
+  - **Factory banks are read-only**, by making every factory column a fresh
+    copy (`Library.column`). Editing what a lane holds can't reach the
+    library. The **user** bank is the saved table itself, shared rather than
+    copied, so edits made on it are kept.
+  - **Bank switches hand off on the launch-quantize boundary**, same slot,
+    each lane's own transition. `current_bank` changes only when the swap
+    *lands* — until then the grid still shows the old kits, and the header
+    should say so rather than name a bank that isn't on the grid yet.
+- **The user bank has its own file** (`segue-user.data`), separate from the
+  per-pset and autosave state. A pset carries which bank and which kits;
+  loading an old one must not quietly throw away user kits built since. So
+  no pset load can touch the user bank — asserted in the tests.
+- **Copy to user replaces "store scene".** It captures what is *playing* —
+  each lane's current pattern, whatever bank and kit — into the first empty
+  user slot. That covers the old scene's job (keep a combination you like)
+  but the result is saved and becomes a real kit, and it is also the only
+  way to keep an edit made on a factory bank.
+- **FX grid redesigned** (2026-09-21) around what you actually used, which
+  was mute. Row 8 is now **banks** and row 2 **kits** (every lane at once);
+  row 7 holds the global transition plus play, step edit, copy to user and
+  follow-all. Removed from the grid: quantize and morph up/down (no
+  feedback — you couldn't see what you'd set without reading the screen;
+  they're screen fields and arc rings), panic (K1+K3), reseed (PARAMETERS),
+  store scene (above). Nothing that was intended got dropped; it moved.
+- **Lane `level` became `velocity`, capped at 100%** (2026-09-21). You asked
+  to reason about it first. It was a velocity multiplier, 0-2, and above 1.0
+  it clipped accents and normal hits together at 127, erasing the dynamics
+  the kits are written in. Kept as a multiplier, capped so it can only turn
+  down. The **id stays `lane_N_level`** — CONVENTIONS §5, psets store by id;
+  only the display name changed. Open: it is inaudible if the Rytm's tracks
+  ignore velocity, which may be why it read as nonsense in the first place.
 - **Scaled back behind a `mode` param** (2026-09-20, defaults to `focus`).
   Rather than deleting the performance layer while the engine is still
   unproven, focus dims FX rows 1 (beat repeat), 4 (solo) and 6 (roll) and
@@ -416,7 +496,47 @@ Open items below.
   wired and MIDI start/stop is sent to every port with `clock_midi_out_N`
   enabled, copying what polyphasic ended up with. Unverified with Link.
 
+## Deliberate exceptions to CONVENTIONS.md
+
+- **§8 — input handlers call `redraw()`** (via `touch()`). The convention is
+  that key/enc callbacks only set a dirty flag and the 15fps loop draws. On
+  hardware (2026-09-20) that left an encoder turn invisible for up to 66ms,
+  which read as the encoder being sluggish even though the value had moved
+  — you turned again before the first change appeared, then it jumped two.
+  `touch()` redraws straight from the handler, **rate-limited to 30fps**.
+  The rule's concern is rapid redraws; the limiter is what prevents them.
+  Kept after CONVENTIONS.md landed because the fix was felt and approved on
+  the device; revisit if it turns out to cost CPU.
+- **§8 — `redraw()` builds strings every frame** (the header, the field
+  line, `next_text`). Not deliberate so much as not yet fixed: it predates
+  the convention. Worth doing alongside a CPU check at 96 PPQN, by caching
+  the strings on state change.
+
 ## Fixed
+
+- **A kit pressed while a bank switch was pending was silently dropped**
+  (found by a new test, 2026-09-21, before it reached hardware). The swap
+  calls `commit()` to hand off, and `commit()` clears any queued launch —
+  right for an ordinary switch, wrong here. So the bank changed and the kit
+  you asked for never arrived. `_swap_bank` now puts the queued launch back,
+  aimed at the new bank, with its transition re-read from the pattern that
+  will actually arrive.
+- **The header named the new bank before the swap had landed.**
+  `select_bank` set `current_bank` the moment you asked, while every lane was
+  still playing the old bank until the boundary. It now changes only when the
+  last lane has swapped.
+- **A bank change under xfade/handover would have blended the new pattern
+  with itself** (caught while writing it). The swap replaces the whole bank
+  before committing, so by the time `commit()` read "the current pattern" as
+  the blend source it was already the new one. `commit()` now takes the old
+  pattern explicitly. There is a test that fails silent without it.
+- **Anything that read the tick between pressing play and the first tick got
+  a number from the previous run** (latent since the Link fix of 2026-09-20;
+  surfaced 2026-09-21 by a rewritten test). On the internal clock the origin
+  is taken on the first tick, but `all_reset` computed `tick` from the *old*
+  origin before that. A beat repeat pressed on the downbeat captured the
+  wrong window and replayed misaligned for the whole hold. `all_reset` now
+  sets `tick = -1`, which is exactly what the first tick sets it to.
 
 - **The pattern grid was measured from the keypress, not from the clock**
   (reported 2026-09-20 as "I often have to try a couple of times to lock in
@@ -516,7 +636,10 @@ Lane → Rytm voice assignment (`Library.LANES`):
 | 7    | CYM   | CY              |
 | 8    | COW   | CB              |
 
-62 patterns ship across the eight banks (CYM and COW leave slot 8 empty).
+56 factory kits across seven banks (40 written, 16 picks in the two variety
+banks), plus the user bank. Every empty slot in every factory bank carries a
+`follow_a = none` override so a voice that sits a kit out stays silent —
+asserted across all of them in `test_segue.lua`.
 
 ## Running the tests
 

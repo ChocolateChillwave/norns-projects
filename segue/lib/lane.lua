@@ -73,6 +73,33 @@ Lane.TRANS_XFADE = 3
 Lane.TRANS_HANDOVER = 4
 Lane.TRANS_NAMES = {"cut", "legato", "xfade", "handover"}
 
+-- INHERITANCE. a pattern-level setting resolves in three steps:
+--
+--   the pattern's own override  (pattern.ov[key], nil if it has none)
+--   then the lane's             (via self.parent, injected by the caller)
+--   then the global value       (also via self.parent)
+--
+-- the lane and global levels live in norns params, which this module must
+-- not touch (CONVENTIONS §4), so the caller hands in `parent(key)` that
+-- does both. left out, it falls back to these defaults -- which is what
+-- the desktop tests run against, and which are also the shipped globals.
+--
+-- only settings that are read when something CHANGES live here: follow
+-- time and actions, chance, transition, quantize. division, swing and
+-- morph are read every tick, so the caller resolves those into plain
+-- fields (self.div, self.swing, self.morph_steps) whenever they change,
+-- and the 96 PPQN hot path never pays for a lookup.
+Lane.DEFAULTS = {
+  follow_time = 13,               -- index of "end" in Pattern.FOLLOW_TIMES
+  follow_a = 1,                   -- "none"
+  follow_b = 1,
+  follow_chance = 100,
+  trans = Lane.TRANS_LEGATO,
+  quant = 7,                      -- index of "1 bar" in QUANT_TICKS
+}
+
+local function default_parent(key) return Lane.DEFAULTS[key] end
+
 function Lane:new(args)
   local m = setmetatable({}, {__index = Lane})
   args = args or {}
@@ -87,9 +114,14 @@ function Lane:new(args)
     m.bank[i] = m.P.new(m.slots, 16, "--")
   end
 
+  m.parent = args.parent or default_parent -- lane/global resolution
+
   m.active = 1
   m.queued = nil                   -- pattern index waiting on a boundary
   m.queued_trans = nil
+  m.queued_quant = nil             -- the quantize that launch resolved to
+  m.pending_bank = nil             -- a bank column waiting on a boundary
+  m.pending_bank_quant = nil
   m.pos = 1                        -- step about to play
   m.started = false
   m.step_count = 0                 -- steps played since the last commit
@@ -124,6 +156,26 @@ function Lane:new(args)
 end
 
 function Lane:pattern() return self.bank[self.active] end
+
+-- a setting as it actually applies to pattern `p` (the active one if left
+-- out): its own override, else whatever the lane/global chain says.
+function Lane:setting(key, p)
+  p = p or self:pattern()
+  if p and p.ov then
+    local v = p.ov[key]
+    if v ~= nil then return v end
+  end
+  return self.parent(key)
+end
+
+-- where that value came from -- "pattern" when p overrides it, otherwise
+-- whatever the parent chain reports. used by the screen to show inherited
+-- values as inherited rather than as if they had been set here.
+function Lane:setting_source(key, p)
+  p = p or self:pattern()
+  if p and p.ov and p.ov[key] ~= nil then return "pattern" end
+  return "parent"
+end
 
 -- `boost` is the momentary roll/fill from the FX grid: it halves the lane's
 -- step length while held, so the same pattern plays at double time. changing
@@ -213,8 +265,8 @@ end
 -- division changes; "end" resolves against the pattern's current length.
 function Lane:follow_steps()
   local p = self:pattern()
-  local t = p.follow.time
-  if t == 0 then return nil end
+  local t = self.P.FOLLOW_TIMES[self:setting("follow_time", p)]
+  if t == nil or t == 0 then return nil end
   if t == self.P.FOLLOW_END then return p.length end
   local steps = (t * Lane.TICKS_PER_16TH) / self:div_ticks()
   steps = math.floor(steps + 0.5)
@@ -228,10 +280,15 @@ end
 -- whole trick -- the playhead carries on where it was, so the switch lands
 -- mid-phrase without restarting it) and snapped to 1 for a cut. wrapping by
 -- the new pattern's length matters when the two are different sizes.
-function Lane:commit(idx, trans)
+-- `from` is the pattern the blend starts from. it is normally whatever was
+-- playing, but a bank switch replaces the whole bank before committing, so
+-- by the time it gets here the "current" pattern is already the new one --
+-- it has to pass the old pattern in explicitly or xfade/handover would
+-- blend the new pattern with itself.
+function Lane:commit(idx, trans, from)
   if idx == nil or idx < 1 or idx > Lane.PATTERN_COUNT then return end
-  trans = trans or self.transition
-  local from = self:pattern()
+  trans = trans or self:setting("trans", self.bank[idx])
+  from = from or self:pattern()
   self.active = idx
   local len = self:pattern().length
 
@@ -255,20 +312,60 @@ function Lane:commit(idx, trans)
   self.step_count = 0
   self.queued = nil
   self.queued_trans = nil
+  self.queued_quant = nil
   self.switched = true
 end
 
 -- queue a manual launch. pressing the pattern that is already queued
 -- cancels it; pressing the one already playing relaunches it (which under
 -- `cut` restarts the loop and under `legato` is deliberately a no-op).
+--
+-- transition and quantize both come from the pattern being LAUNCHED, not
+-- the one being left -- the way an Ableton clip carries its own launch
+-- settings. so a fill with its own "cut" override always cuts in, whatever
+-- the lane or the global transition says.
 function Lane:launch(idx, trans)
   if self.queued == idx then
     self.queued = nil
     self.queued_trans = nil
+    self.queued_quant = nil
     return
   end
+  local target = self.bank[idx]
   self.queued = idx
-  self.queued_trans = trans or self.transition
+  self.queued_trans = trans or self:setting("trans", target)
+  self.queued_quant = Lane.QUANT_TICKS[self:setting("quant", target)]
+end
+
+-- queue a whole new bank column to swap in at the next quantize boundary.
+-- the lane stays on the same slot number and hands off with its own
+-- transition, so a bank change is just another smooth switch: under legato
+-- the playhead carries across into the equivalent kit of the new bank.
+function Lane:queue_bank(column, quant_idx)
+  self.pending_bank = column
+  self.pending_bank_quant = Lane.QUANT_TICKS[quant_idx or self.parent("quant")]
+end
+
+function Lane:_swap_bank()
+  local from = self:pattern()
+  local queued = self.queued
+  local queued_quant = self.queued_quant
+  self.bank = self.pending_bank
+  self.pending_bank = nil
+  self.pending_bank_quant = nil
+  -- same slot, new bank. the transition is the new pattern's own (it may
+  -- override); the blend starts from the pattern that was actually playing.
+  self:commit(self.active, self:setting("trans", self.bank[self.active]), from)
+  -- commit() clears any queued launch, which is right for an ordinary switch
+  -- and wrong here: a kit pressed while the bank change was pending would
+  -- otherwise be silently dropped. put it back, aimed at the NEW bank, and
+  -- re-read its transition from the pattern that will actually arrive --
+  -- the same "arriving pattern decides" rule as every other switch.
+  if queued then
+    self.queued = queued
+    self.queued_quant = queued_quant
+    self.queued_trans = self:setting("trans", self.bank[queued])
+  end
 end
 
 -- how many of this lane's own steps until a queued launch commits, or nil
@@ -277,7 +374,14 @@ end
 -- boundary -- which is not the same as the next boundary when the lane's
 -- division is coarser than the quantize setting.
 function Lane:steps_to_launch(t, quant)
-  if self.queued == nil then return nil end
+  if self.queued == nil and self.pending_bank == nil then return nil end
+  -- the launch carries its own resolved quantize; a bank change carries
+  -- the one it was queued with. the argument is only the fallback.
+  if self.queued then
+    quant = self.queued_quant or quant
+  else
+    quant = self.pending_bank_quant or quant
+  end
   if quant == nil or quant == 0 then return 0 end
   if quant == Lane.QUANT_PATTERN then
     return self:pattern().length - self.pos + 1
@@ -398,20 +502,32 @@ function Lane:tick(t, quant)
   if self.follow_on then
     local need = self:follow_steps()
     if need and self.step_count >= need then
-      local f = self:pattern().follow
-      local action = f.a
-      if f.chance < 100 and math.random(100) > f.chance then action = f.b end
+      local p = self:pattern()
+      local action = self:setting("follow_a", p)
+      local chance = self:setting("follow_chance", p)
+      if chance < 100 and math.random(100) > chance then
+        action = self:setting("follow_b", p)
+      end
       local target = self:_resolve(action)
       if target then
-        self:commit(target, self.transition)
+        -- the arriving pattern's own transition, as with a manual launch
+        self:commit(target, self:setting("trans", self.bank[target]))
       else
         self.step_count = 0 -- re-arm, so editing the action later takes hold
       end
     end
   end
 
-  -- then any manual launch whose quantize boundary has arrived
-  if self.queued and self:_boundary(k * dt, quant) then
+  -- a bank change waiting on its boundary goes first, so that a launch
+  -- queued in the same breath lands inside the NEW bank rather than the old
+  if self.pending_bank and self:_boundary(k * dt, self.pending_bank_quant) then
+    self:_swap_bank()
+  end
+
+  -- then any manual launch whose quantize boundary has arrived. the
+  -- launch's own resolved quantize wins over the one passed in, which is
+  -- only the fallback for callers that queue without going through launch()
+  if self.queued and self:_boundary(k * dt, self.queued_quant or quant) then
     self:commit(self.queued, self.queued_trans)
   end
 
@@ -433,6 +549,55 @@ function Lane:reset()
   self.morph_from = nil
   self.queued = nil
   self.queued_trans = nil
+  self.queued_quant = nil
+  self.pending_bank = nil
+  self.pending_bank_quant = nil
+end
+
+---------------------------------------------------------------- columns
+
+-- a column is one lane's eight patterns: its share of a bank. these pack
+-- one into plain tables and back, for the autosave, psets and the User
+-- bank alike. step keys go out as strings because tab.save writes integer
+-- keys positionally and a sparse trig row would not survive that.
+function Lane.pack_column(column)
+  local out = {}
+  for i = 1, Lane.PATTERN_COUNT do
+    local p = column[i]
+    local rows = {}
+    for s = 1, p.slots do
+      local row = {}
+      for step, vel in pairs(p.trigs[s]) do row[tostring(step)] = vel end
+      rows[s] = row
+    end
+    local ov = {}
+    for k, v in pairs(p.ov) do ov[k] = v end
+    out[i] = {name = p.name, length = p.length, slots = p.slots,
+              trigs = rows, ov = ov}
+  end
+  return out
+end
+
+function Lane.unpack_column(t, P, slots)
+  local column = {}
+  for i = 1, Lane.PATTERN_COUNT do
+    local src = t and t[i]
+    local p = P.new((src and src.slots) or slots, (src and src.length) or 16,
+                    (src and src.name) or "--")
+    if src then
+      for s = 1, p.slots do
+        local row = src.trigs and src.trigs[s]
+        if row then
+          for step, vel in pairs(row) do p.trigs[s][tonumber(step)] = vel end
+        end
+      end
+      if src.ov then
+        for k, v in pairs(src.ov) do p.ov[k] = v end
+      end
+    end
+    column[i] = p
+  end
+  return column
 end
 
 ---------------------------------------------------------------- persistence
@@ -444,19 +609,7 @@ function Lane:serialize()
              transition = self.transition, morph_steps = self.morph_steps,
              voices = {}, bank = {}}
   for i = 1, #self.voices do t.voices[i] = self.voices[i] end
-  for i = 1, Lane.PATTERN_COUNT do
-    local p = self.bank[i]
-    local rows = {}
-    for s = 1, p.slots do
-      local row = {}
-      for step, vel in pairs(p.trigs[s]) do row[tostring(step)] = vel end
-      rows[s] = row
-    end
-    t.bank[i] = {name = p.name, length = p.length, slots = p.slots,
-                 trigs = rows,
-                 follow = {time = p.follow.time, a = p.follow.a,
-                           b = p.follow.b, chance = p.follow.chance}}
-  end
+  t.bank = Lane.pack_column(self.bank)
   return t
 end
 
@@ -489,28 +642,7 @@ function Lane:deserialize(t, opts)
     for i = 1, self.slots do self.hits[i] = {voice = 0, vel = 0} end
   end
   if t.bank then
-    for i = 1, Lane.PATTERN_COUNT do
-      local src = t.bank[i]
-      if src then
-        local p = self.P.new(src.slots or self.slots, src.length or 16,
-                             src.name or "--")
-        for s = 1, p.slots do
-          local row = src.trigs and src.trigs[s]
-          if row then
-            for step, vel in pairs(row) do
-              p.trigs[s][tonumber(step)] = vel
-            end
-          end
-        end
-        if src.follow then
-          p.follow.time = src.follow.time
-          p.follow.a = src.follow.a
-          p.follow.b = src.follow.b
-          p.follow.chance = src.follow.chance
-        end
-        self.bank[i] = p
-      end
-    end
+    self.bank = Lane.unpack_column(t.bank, self.P, self.slots)
   end
   self:reset()
 end

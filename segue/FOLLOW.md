@@ -1,10 +1,10 @@
 # segue — follow actions
 
-**v0.7.0** · the reference for the one subsystem segue exists for.
+**v0.8.0** · the reference for the one subsystem segue exists for.
 
 A follow action is a pattern's answer to the question *"and then what?"* —
 asked by the pattern itself, on its own clock, without you touching
-anything. Every one of the 64 patterns carries its own answer.
+anything.
 
 This is the whole idea borrowed from Ableton's clip follow actions, with one
 addition: segue also controls **how** the change happens, not just when and
@@ -14,8 +14,8 @@ where. That part is §6.
 
 ## 1. The four settings
 
-Every pattern carries exactly four numbers. Select a lane with **E1** and a
-pattern with **E2**, then hold **K1 and turn E3** to reach each field:
+A follow action is four numbers. Hold **K1 and turn E3** to reach each field
+on the screen:
 
 | field | means | values |
 |---|---|---|
@@ -30,6 +30,12 @@ there so you can sweep the knob without the setting jumping.
 
 A very common pair is **A = something, B = none**: "sometimes move, otherwise
 stay." That is what the hat lanes ship with.
+
+**These four are not stored 64 times.** They have a **global** value, and any
+lane or single pattern can set its own — see §9. Out of the box one global
+"at the end, stay put" covers nearly everything, and only the lanes that move
+say otherwise. Which level an edit lands on is the **level** field (the last
+one on the screen), and it starts on `global`.
 
 ## 2. Follow time
 
@@ -114,7 +120,7 @@ step  ... 14   15   16  │  1    2    3 ...
 ```
 
 **The timer restarts on every change**, however the change happened — a
-follow action, a button press, a scene launch. And the timer that matters is
+follow action, a button press, a kit launch, a bank change. And the timer that matters is
 always the **newly arrived** pattern's own `follow` setting. Each pattern
 decides how long it gets.
 
@@ -129,8 +135,10 @@ an action navigates is only the patterns that would actually make a sound.
 
 This matters because segue's library is organised as **kits** — a row is one
 beat across all eight lanes — and most kits leave some lanes out. The amen
-has no cowbell. So the COW lane's bank is effectively two patterns long, and
-its `next` steps between those two, skipping the six kits it has no part in.
+has no cowbell. How many kits a lane can actually move between depends on
+the bank: COW has a part in several electro kits, and in none of the
+breakbeat ones. Its `next` steps between whichever kits it has a part in and
+skips the rest.
 
 An empty pattern is not a destination, and it is also not a trap:
 
@@ -166,8 +174,11 @@ The two morph transitions go further than Ableton does and blend the
 patterns rather than swapping them. On a one-voice lane `handover` has
 nothing to stagger and behaves as `xfade`.
 
-Set the transition per lane (FX row 7 cols 1–4 sets all eight at once), and
-the morph window length with FX row 7 cols 7–8.
+Transition inherits like the follow settings (§9): **FX row 7 cols 1–4** set
+the global one, and any lane, kit or pattern can have its own. The one used
+is the **arriving** pattern's — give a fill its own `cut` and it always cuts
+in, while the rest of the lane stays legato. The morph window length is a
+screen field and an arc ring.
 
 ## 7. Follow actions ignore launch quantize
 
@@ -186,79 +197,83 @@ time is the only way to get a change to land off the bar line.
 
 Three levels, coarsest first:
 
-- **FX row 8 col 3** — flips follow on/off for all eight lanes at once.
+- **FX row 7 col 8** — flips follow on/off for all eight lanes at once.
 - **FX row 5** — one button per lane. Lit means that lane's follow is live.
   This is how you freeze a wandering lane without editing its patterns.
   *All eight lanes ship with follow on* — the quiet lanes are quiet because
-  their patterns say `none`, not because the lane is disabled.
-- **`follow = off`** on a single pattern — that one pattern never hands off,
-  while the rest of the lane still does.
+  they inherit a global `none`, not because the lane is disabled.
+- **`follow = off`** at any level — globally, for a lane, or for one pattern.
 
-There is also **FX row 8 col 2, reseed**: every follow-enabled lane re-rolls
+There is also **PARAMETERS > patterns > reseed**: every follow-enabled lane re-rolls
 where it is, as if all of them had hit an `any` at once. A manual shove when
 the drift has settled. Two things it is not: it goes through the normal
 launch path, so it **waits for the launch-quantize boundary** rather than
 landing instantly, and because it rolls `any` rather than `other`, a lane
 can perfectly well re-pick the pattern it is already on.
 
-## 9. Editing many at once
+## 9. Global, lane, pattern
 
-64 patterns × 4 settings is a lot of encoder trips, so the four follow
-fields obey an **edit scope**. It is the last field in the list — hold
-**K1 and turn E3** round to `scope`, then **E3** picks one of:
+The four follow settings — and transition — are not stored per pattern. They
+**inherit**: every one has a global value, and a lane or a single pattern can
+set its own.
 
-| scope | a follow edit writes to |
+```
+GLOBAL      follow end · none · none · 100%
+  |
+  +- KICK   (inherits)                -> end · none
+  +- CHH    follow 1 bar · other · 40%   <- its own
+  |           +- kit 7  follow 1/2       <- its own
+  +- SNARE  (inherits)                -> end · none
+```
+
+Change the global and everything that hasn't been given its own value moves;
+anything that has keeps it. That is the Ableton idiom — a clip's launch
+quantize reads *Global* until you change it.
+
+The **level** field (the last one; hold **K1**, turn **E3** to reach it)
+chooses where an edit lands:
+
+| level | an edit changes |
 |---|---|
-| `pattern` | just the one on screen. The default. |
-| `lane` | all 8 patterns of the selected lane — *"make the hats drift, whatever kit they're on"* |
-| `kit` | the selected slot on all 8 lanes — the whole row, so a kit carries its own behaviour as well as its notes |
-| `all` | every pattern in the script |
+| `global` *(default)* | the value everything falls back to |
+| `lane` | the selected lane — *"make the hats drift, whatever kit they're on"* |
+| `kit` | the selected kit slot on every lane — so a kit carries its own behaviour as well as its notes |
+| `pattern` | just the one pattern on screen |
 
-While scope is anything but `pattern`, the field line shows it in brackets:
+The field line shows the level: `[lane] chance 40%`. A value drawn **dim** is
+inherited; **bright** means it is set at this level.
 
-```
-[LANE] chance 40%
-```
+- From an inherited value, the first click up **adopts the value you're
+  already hearing** — the marker changes, the sound doesn't. The next click
+  changes it.
+- Turn a value **down past its lowest setting** to clear it back to inheriting.
+- At the `kit` level an **empty slot is skipped**, so its `none` — the thing
+  that keeps a sat-out voice silent — is never overwritten.
 
-That badge is the only warning you get, so it is deliberately in front of
-the field name rather than tucked in a corner.
-
-**A bulk edit assigns, it does not nudge.** The new value is worked out from
-the pattern on screen and then written to everything in scope, so they all
-end up identical and the number you can see is the truth. Turning `chance`
-up one click at `all` scope does not add 5% to 64 different values — it sets
-all 64 to whatever the selected one became.
-
-Two limits worth knowing:
-
-- **Only the four follow fields scope this way.** `length` deliberately does
-  not: it changes what a pattern *is* rather than how it behaves, and the
-  kits are not all the same length on purpose.
-- **Lane settings ignore `lane` and `kit`.** Division, swing, transition and
-  the rest are already one-per-lane, so those two scopes mean nothing to
-  them; only `all` widens them, to every lane. The badge tells you which
-  you are getting — it reads `[ALL LANES]` for those.
+This replaced a v0.4 **scope** field that *copied* a value into many patterns
+at once. Copying was the problem: once written everywhere, a deliberate
+setting and a copy looked identical, and the next wide edit flattened both.
 
 ### On the arc
 
-Holding **K1** while turning an arc ring applies it to every lane instead of
-the selected one. This works differently on purpose: the arc **deltas each
-lane independently**, so lanes that were set differently stay different —
-the right feel for nudging everything mid-performance. The screen's `scope`
-is the flatten-them-all kind, for settings work.
-
-The arc cannot reach follow settings at all, only lane settings (division,
-swing, chance/trig, level, transition, morph). Follow settings live in the
-pattern data rather than in params, and the arc binds to params.
+Holding **K1** while turning an arc ring applies it to every lane, nudging
+each from where it is — lanes set differently stay different. The arc reaches
+params only, so it can turn the global and lane follow values but not a single
+pattern's. See MANUAL §11.
 
 ## 10. What ships, and why
 
-| lane | follow | action | chance | what it does |
+| where | follow | action | chance | what it does |
 |---|---|---|---|---|
-| KICK, SNARE, CLAP, CYM, COW | `end` | `none` | — | stays put |
-| TOMS | `end` | `next` | 100% | steps to the next fill every time round |
-| CHH | `1 bar` | `other` / `none` | 40% | every bar, a 40% chance of grabbing another kit's hat |
-| OHH | `2 bar` | `other` / `none` | 50% | same, slower and less often |
+| **global** | `end` | `none` / `none` | 100% | the default everything inherits: stay put |
+| KICK, SNARE, CLAP, CYM, COW | — | — | — | inherit it, so they hold |
+| TOMS (lane) | — | `next` | — | steps to the next fill every time round |
+| CHH (lane) | `1 bar` | `other` | 40% | every bar, a 40% chance of grabbing another kit's hat |
+| OHH (lane) | `2 bar` | `other` | 50% | same, slower and less often |
+
+So the shipped behaviour is one global value and three lane overrides, not
+64 copies of a setting. Change the global and the five quiet lanes follow;
+the hats and toms keep their own.
 
 The reasoning: the rhythm section is the floor and a kick that wanders on
 its own is just noise. The movement goes to the parts where it is musical —
@@ -267,7 +282,8 @@ starts without the ground shifting under you, and nothing about it is fixed.
 
 ## 11. Things to try
 
-**Let a single lane wander.** Set CHH's follow to `1/2` and `other` at 100%.
+**Let a single lane wander.** At the `lane` level, set CHH's follow to `1/2`
+and `other` at 100%.
 The hat changes kit twice a bar while everything else holds. This is the
 quickest way to hear what legato is doing, because the hat is busy enough
 that a switch is obvious and harmless enough that a bad one doesn't matter.
@@ -284,12 +300,15 @@ reads as a build that resets.
 at a time — drifts without ever leaping.
 
 **Fills that arrive on their own.** Put a fill in the last slot of the TOMS
-lane and set the slot before it to `A = next` at 20%, `B = none`. The fill
-turns up roughly every five times round, unpredictably.
+lane and, at the `pattern` level, set the slot before it to `A = next` at
+20%, `B = none`. The fill turns up roughly every five times round,
+unpredictably. Give the fill its own `cut` transition and it always lands
+hard, whatever the rest of the lane is doing.
 
-**Everything at once.** Set all eight lanes to `other` on `1 bar`. Chaos,
-but instructive chaos — it tells you fast whether the kits are coherent
-enough that any combination of their parts works.
+**Everything at once.** At the `global` level set `other` on `1 bar`, and
+make sure no lane overrides it. Chaos, but instructive — it tells you fast
+whether a bank's kits are coherent enough that any mix of their parts works.
+Try it on house, then on variety 2.
 
 ## 12. Gotchas
 
@@ -312,6 +331,9 @@ enough that any combination of their parts works.
 - **`any` can pick what is already playing.** Under `cut` that restarts the
   loop; under `legato` nothing audible happens at all. If you wanted
   guaranteed change, use `other`.
+- **A global edit doesn't reach a lane with its own value.** That's the
+  point of inheritance, but it can look like a setting is being ignored.
+  Check the level, and look for a bright (set-here) value further down.
 - **Beat repeat hides follow actions, it does not stop them.** The lanes
   keep running and keep handing off underneath a held repeat — you just
   aren't hearing them. Let go and you may be somewhere new.

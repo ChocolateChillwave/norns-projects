@@ -171,6 +171,21 @@ function params:add(t)
   add_param(p)
   count_into_group()
 end
+-- the positional forms of the same thing (CONVENTIONS §5 lists these as the
+-- API; the table form above is the older spelling and still works on norns)
+function params:add_option(id, name, options, default)
+  self:add{type = "option", id = id, name = name, options = options,
+           default = default}
+end
+function params:add_number(id, name, min, max, default, formatter)
+  self:add{type = "number", id = id, name = name, min = min, max = max,
+           default = default}
+  if formatter then self.by_id[id].formatter = formatter end
+end
+function params:add_binary(id, name, behavior, default)
+  self:add{type = "binary", id = id, name = name, default = default or 0}
+end
+
 function params:lookup_param(id)
   local p = self.by_id[id]
   if p == nil then error("no such param: " .. tostring(id)) end
@@ -414,6 +429,34 @@ function S.upvalue(f, name)
 end
 
 function S.get_lanes() return S.upvalue(redraw, "lanes") end
+
+-- S.upvalue only looks one closure deep. a local that only a helper of a
+-- helper touches (current_bank, reached via fx_level) needs a search down
+-- through the functions f closes over. returns value, found -- the found
+-- flag matters because nil is a perfectly legal value for many of these.
+function S.deep(f, name, seen)
+  seen = seen or {}
+  if type(f) ~= "function" or seen[f] then return nil, false end
+  seen[f] = true
+  local i = 1
+  while true do
+    local n, v = debug.getupvalue(f, i)
+    if n == nil then break end
+    if n == name then return v, true end
+    i = i + 1
+  end
+  i = 1
+  while true do
+    local n, v = debug.getupvalue(f, i)
+    if n == nil then break end
+    if type(v) == "function" then
+      local r, found = S.deep(v, name, seen)
+      if found then return r, true end
+    end
+    i = i + 1
+  end
+  return nil, false
+end
 
 -- norns provides clock_midi_out_N system params; the script reads them to
 -- decide who to send transport to

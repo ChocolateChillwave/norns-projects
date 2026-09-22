@@ -9,7 +9,7 @@ Each subfolder is one standalone norns script (copy of what lives in `dust/code/
 | Script | What it is | Docs |
 |---|---|---|
 | [cascade](cascade/) | Chord strumming instrument, out to MIDI and/or Just Friends over crow. Hold a grid cell and the chord under it strums; hold several and they merge into one strum. Arc edits timing, dynamics and pattern while it rings. | [Manual](cascade/MANUAL.md) · [Notes](cascade/NOTES.md) |
-| [segue](segue/) | MIDI-out drum sequencer for the Elektron Analog Rytm. Eight lanes of patterns, each with its own playhead and Ableton-style follow actions. | [Manual](segue/MANUAL.md) · [Follow actions](segue/FOLLOW.md) · [Notes](segue/NOTES.md) |
+| [segue](segue/) | MIDI-out drum sequencer for the Elektron Analog Rytm. Eight lanes of patterns, each with its own playhead and Ableton-style follow actions; eight genre banks of kits, and settings that inherit global → lane → pattern. | [Manual](segue/MANUAL.md) · [Follow actions](segue/FOLLOW.md) · [Notes](segue/NOTES.md) |
 | [polyphasic](polyphasic/) | 4-track polymetric MIDI sequencer with generative evolve/randomize, arc paging, and grid entry. Adapted from pitter-patter. | [Notes](polyphasic/NOTES.md) |
 | [rytmpatch](rytmpatch/) | CC patch randomizer/editor for the Elektron Analog Rytm MKII. | [Notes](rytmpatch/NOTES.md) |
 | [summitpatch](summitpatch/) | Patch randomizer and per-key overlays for the Novation Summit/Peak. | [Notes](summitpatch/NOTES.md) |
