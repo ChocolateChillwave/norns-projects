@@ -72,6 +72,7 @@ norns-projects/
 ├── README.md          <- index of the scripts (with links to their docs) + git command reference
 ├── CONVENTIONS.md     <- script-writing standard, verified against the norns API
 ├── ROADMAP.md         <- cross-script tracker: status, next moves, what needs hardware
+├── TODO.md            <- the checklist: every open item, tagged by who it's waiting on
 ├── IDEAS.md           <- brainstorm backlog of candidate new scripts + shared infrastructure
 ├── run-tests.lua      <- runs every script's test/ suite; exits non-zero on failure
 ├── cascade/           <- strummed-chord instrument:        lib/, test/, MANUAL.md, NOTES.md
@@ -84,3 +85,14 @@ norns-projects/
 Every script has a `<script>.lua` entry point next to its `lib/`. `test/` dirs are desktop Lua suites (see Off-device testing above); norns ignores them. `NOTES.md` is the per-script status/decisions/open-questions file; `MANUAL.md` is a user manual, and only cascade and segue have one so far. `ROADMAP.md` at the root is the layer above those: cross-script status and ordering, plus the items that belong to no single script (diverged stubs, shared-copy sync, integrations). It deliberately holds no detail of its own — it links into the NOTES files, so the per-script convention above is unchanged. Update it when a script's status changes (first hardware pass, a suite added, a planned item shipped). `CONVENTIONS.md` is the standard every script is written and reviewed against; when a script teaches the repo a new lesson (a bug class, a norns API surprise), add it there with a pointer to where it happened. `IDEAS.md` holds candidate *new* scripts; an idea that gets picked up becomes a folder and moves onto the ROADMAP.
 
 Each script folder is independent — mirrors its counterpart in dust/code/<name> on the norns device. Coding conventions, API notes, and best practices in this file apply to all of them. Project-specific decisions, current status, and open questions belong in each script's own NOTES.md, not here — keeps this file stable while individual scripts evolve.
+
+## Progress checks ("where am I at?")
+
+`TODO.md` is the checklist, and the user asked for it to be how progress gets tracked. When they ask where things stand, or what's needed from them:
+
+1. **Reconcile first.** `git log <commit>..HEAD`, where `<commit>` is from TODO.md's "Last reviewed" line. Also check `git status` for uncommitted work, since other sessions work in this repo too. Tick anything the commits settled, add anything new they raised, and fix any NOTES that contradict their own later sections.
+2. **Answer from TODO.md.** Lead with what's waiting on the user (`device`, then `decide`), grouped into the suggested device sessions, then the `desk` items ready for a *go*. Keep it short. The file holds the detail.
+3. **Record the answers.** When the user answers an item by ID, write the outcome into that script's NOTES.md (the record of *why*), tick the item, move it to Done with the date and a one-line result, and move up anything it unblocks.
+4. **Update the "Last reviewed" line** to today and the current HEAD.
+
+New open questions found while working on a script go into its NOTES.md *and* get a TODO.md item with the right tag. Something that isn't in TODO.md won't come up at a progress check.

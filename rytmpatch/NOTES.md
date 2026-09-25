@@ -59,16 +59,26 @@ Started 2026-09-16; not yet run on a device or against a real Rytm.
   incoming CC), so morphs never fight the user.
 
 ## Open items / unverified
-- Rytm-side defaults: FX control channel assumed 13 and track channels 1-12
-  — both are params, verify against the Rytm's MIDI CONFIG > CHANNELS.
+- **Channels verified on the device 2026-09-24** (MIDI CONFIG > CHANNELS):
+  tracks on **1-12 in order**, FX on **13** — exactly what the script
+  assumed, so `track ch` and `fx ch` keep their defaults. Note receive and
+  parameter receive are both enabled on the Rytm, so the CCs will land.
+- Also on that page: **auto channel 14**, **perf channel 15**. The auto
+  channel addresses whichever track is currently selected on the Rytm
+  rather than a fixed one, so it is the channel to use for a "follow the
+  machine" feature, not for addressing a known track. The perf channel is
+  where the performance macros listen — see the unmapped list below.
 - Audition (off by default) sends note 60 on the track channel, assuming
   the Rytm plays the track chromatically from a note on its own channel.
+  The channel half of that is confirmed now; note 60 itself is not.
 - Sending machine type (CC 15) was left out: the CSV's value→machine
   list looks off (lists RS Hard twice), and changing machines remotely is
   destructive. Could come back as an explicit "send machine" trigger.
 - Not mapped yet: trig page (CC 3-5, 11-14), euclidean (86-91, 117),
   performance macros (35-47), scenes (92), track mute/solo (93-95), LFO
-  depth's 14-bit LSB (CC 118, only MSB is sent).
+  depth's 14-bit LSB (CC 118, only MSB is sent). The macros and scenes
+  would go out on the perf channel (15 here), not a track channel — a
+  third scope alongside track and FX, so they need their own param.
 - Grid/arc: none yet. Arc via garc.lua would suit a page of 8 → 2 pages of 4.
 - The tame windows are judgement calls made off-device, not measured
   against a Rytm — the ones worth re-checking by ear first are LFO DEPTH

@@ -18,7 +18,7 @@ Only cascade and segue have a full user manual so far; for the others, `NOTES.md
 
 **[ROADMAP.md](ROADMAP.md)** is the cross-script view: where each script stands, what the next move is, and one gathered list of everything waiting on a norns being in front of you.
 
-**[CONVENTIONS.md](CONVENTIONS.md)** is the standard every script here is written to, checked against the norns API source. **[IDEAS.md](IDEAS.md)** is the backlog of candidate new scripts.
+**[CONVENTIONS.md](CONVENTIONS.md)** is the standard every script here is written to, checked against the norns API source. **[IDEAS.md](IDEAS.md)** is the backlog of candidate new scripts. **[TODO.md](TODO.md)** is the checklist: every open item, tagged by whether it's waiting on you at the norns, on a decision from you, or on desk work. Ask "where am I at?" and that's what gets reviewed.
 
 ## Common commands
 
